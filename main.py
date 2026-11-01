@@ -194,7 +194,8 @@ class GlassEarthBot(ForecastBot):
     _structure_output_validation_samples = 2
 
     def __init__(self, *, run_mode: str = "unknown", **kwargs: Any) -> None:
-        kwargs.setdefault("metaculus_client", LedgerClient())
+        if kwargs.get("metaculus_client") is None:
+            kwargs["metaculus_client"] = LedgerClient()
         super().__init__(**kwargs)
         self.run_mode = run_mode
         self.ledger = ForecastLedger(LEDGER_PATH)
