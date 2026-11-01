@@ -1,3 +1,13 @@
+# glass-earth-bot
+
+Version 0 of Glass Earth, a public AI forecasting desk whose forecasts are
+timestamped and scored, entered in the Metaculus FutureEval bot tournament. It
+is built from Metaculus's official template, whose README follows unchanged.
+[GLASS_EARTH.md](GLASS_EARTH.md) explains what this fork changes, how to set it
+up and run it, and how to check its records.
+
+---
+
 # Simple Metaculus forecasting bot
 This repository contains a simple bot meant to get you started with creating your own bot for the AI Forecasting Tournament. Go to https://www.metaculus.com/futureeval/participate/ for more info and tournament rules (and then go to the  "Getting Started" section of our [resources](https://www.metaculus.com/notebooks/38928/ai-benchmark-resources/#want-to-join-the-ai-forecasting-benchmark) page).
 
