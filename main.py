@@ -38,6 +38,7 @@ from forecasting_tools import (
     PredictedOptionList,
     ReasonedPrediction,
     SmartSearcher,
+    DataOrganizer,
     ForecastReport,
     clean_indents,
     structure_output,
@@ -88,6 +89,10 @@ class GlassEarthBot(ForecastBot):
     the Fall 2026 FutureEval Bot Tournament. Changes from the template:
     - Each question gets one forecast from each model in ENSEMBLE_MODELS,
       combined by the template's own _aggregate_predictions.
+    - Each model states a base rate from a reference class first, then adjusts
+      it for the current evidence.
+    - The comment states the submitted forecast and how it was combined, and
+      the bot will not publish a comment that leaves it out.
 
     Notes from the template:
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
@@ -293,6 +298,105 @@ class GlassEarthBot(ForecastBot):
             rationales.append(new_rationale)
         return "\n".join(rationales)
 
+    ##################################### COMMENT #####################################
+
+    async def _aggregate_predictions(
+        self,
+        predictions: list[PredictionTypes],
+        question: MetaculusQuestion,
+    ) -> PredictionTypes:
+        aggregated = await super()._aggregate_predictions(predictions, question)
+        if isinstance(question, BinaryQuestion):
+            # The comment shows the final probability to two decimal places of a
+            # percent. Rounding to match means the comment states exactly the
+            # value that is submitted.
+            aggregated = round(aggregated, 4)
+        return aggregated
+
+    @staticmethod
+    def _combination_rule(question: MetaculusQuestion) -> str:
+        if isinstance(question, BinaryQuestion):
+            return "the median of the model forecasts below, after each is held between 1% and 99%."
+        if isinstance(question, MultipleChoiceQuestion):
+            return "the average of each option's probability across the model forecasts below."
+        if isinstance(question, (NumericQuestion, DateQuestion)):
+            return "the median of the model forecasts below, taken point by point along their cumulative distributions."
+        return "the forecasting-tools method for this question type, applied to the model forecasts below."
+
+    def _create_comment(
+        self,
+        question: MetaculusQuestion,
+        research_prediction_collections: list[ResearchWithPredictions],
+        aggregated_prediction: PredictionTypes,
+        final_cost: float,
+        time_spent_in_minutes: float,
+    ) -> str:
+        """
+        The template's comment layout, plus a line saying how the model forecasts
+        were combined. The comment is built from the same aggregated prediction
+        that is submitted, and this refuses to return a comment that does not
+        state it, so the published comment always matches the forecast.
+        """
+        report_type = DataOrganizer.get_report_type_for_question_type(type(question))
+        final_prediction = report_type.make_readable_prediction(aggregated_prediction)
+
+        all_summaries = []
+        all_core_research = []
+        all_forecaster_rationales = []
+        for i, collection in enumerate(research_prediction_collections):
+            all_summaries.append(
+                self._format_and_expand_research_summary(i + 1, report_type, collection)
+            )
+            all_core_research.append(self._format_main_research(i + 1, collection))
+            all_forecaster_rationales.append(
+                self._format_forecaster_rationales(i + 1, collection)
+            )
+        combined_summaries = "\n".join(all_summaries)
+        combined_research_reports = "\n".join(all_core_research)
+        combined_rationales = "\n".join(all_forecaster_rationales)
+
+        disabled = "extra_metadata_in_explanation is disabled"
+        show_metadata = self.extra_metadata_in_explanation
+        cost = f"${round(final_cost, 4)} (estimated)" if show_metadata else disabled
+        time_spent = (
+            f"{round(time_spent_in_minutes, 2)} minutes" if show_metadata else disabled
+        )
+        llms = self.make_llm_dict() if show_metadata else disabled
+        bot_name = self.__class__.__name__ if show_metadata else disabled
+        comment = clean_indents(
+            f"""
+            # SUMMARY
+            *Question*: {question.question_text}
+            *Final Prediction*: {final_prediction}
+            *How the final prediction was made*: {self._combination_rule(question)}
+            *Total Cost*: {cost}
+            *Time Spent*: {time_spent}
+            *LLMs*: `{llms}`
+            *Bot Name*: {bot_name}
+
+            {combined_summaries}
+
+            # RESEARCH
+            {combined_research_reports}
+
+            # FORECASTS
+            {combined_rationales}
+            """
+        )
+        max_comment_size = 150000
+        if len(comment) > max_comment_size:
+            comment = (
+                comment[: max_comment_size - 200]
+                + "\n\n---\n\nThe comment was too long and has been cut short."
+            )
+        # clean_indents may change leading spaces, so compare without them.
+        stated = " ".join(f"*Final Prediction*: {final_prediction}".split())
+        if stated not in " ".join(comment.split()):
+            raise ValueError(
+                "The comment does not state the final prediction, so nothing will be published"
+            )
+        return comment
+
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -362,9 +466,9 @@ class GlassEarthBot(ForecastBot):
     ) -> ReasonedPrediction[float]:
         prompt = clean_indents(
             f"""
-            You are a professional forecaster interviewing for a job.
+            You are a professional forecaster. Your reasoning will be published next to your forecast.
 
-            Your interview question is:
+            Your question is:
             {question.question_text}
 
             Question background:
@@ -382,13 +486,14 @@ class GlassEarthBot(ForecastBot):
 
             Today is {datetime.now().strftime("%Y-%m-%d")}.
 
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The status quo outcome if nothing changed.
-            (c) A brief description of a scenario that results in a No outcome.
-            (d) A brief description of a scenario that results in a Yes outcome.
+            Write your reasoning in these steps, in this order:
+            1. Reference class and base rate. Choose a reference class of comparable past cases. Say what the class is, roughly how many cases it covers, and how often such cases ended in Yes. Write this as "Base rate: XX%" before you consider anything specific to this question. If no close class exists, use the nearest one and say how well it fits.
+            2. Current evidence. Go through the specific facts in the background and research. For each one, say whether it moves the probability up or down from the base rate, and roughly how far.
+            3. Time and status quo. Say how long until the outcome is known, and what the outcome would be if nothing changed.
+            4. Scenarios. Briefly describe one way this ends in No and one way it ends in Yes.
+            5. Adjusted forecast. Start from the base rate, apply your adjustments, and say how far you moved and why.
 
-            You write your rationale remembering that good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time.
+            Good forecasters anchor on the base rate and move away from it only as far as the evidence justifies. They also put extra weight on the status quo, since the world changes slowly most of the time.
             {self._get_conditional_disclaimer_if_necessary(question)}
 
             The last thing you write is your final answer as: "Probability: ZZ%", 0-100
@@ -407,6 +512,7 @@ class GlassEarthBot(ForecastBot):
         parsing_instructions = clean_indents(
             f"""
             The text given to you is trying to give a probability forecast for a binary question.
+            - The text states a base rate before its final answer. Return the final answer, not the base rate.
             {self._create_resolved_question_parsing_message()}
             """
         )
@@ -431,9 +537,9 @@ class GlassEarthBot(ForecastBot):
     ) -> ReasonedPrediction[PredictedOptionList]:
         prompt = clean_indents(
             f"""
-            You are a professional forecaster interviewing for a job.
+            You are a professional forecaster. Your reasoning will be published next to your forecast.
 
-            Your interview question is:
+            Your question is:
             {question.question_text}
 
             The options are: {question.options}
@@ -452,13 +558,15 @@ class GlassEarthBot(ForecastBot):
 
             Today is {datetime.now().strftime("%Y-%m-%d")}.
 
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The status quo outcome if nothing changed.
-            (c) A description of a scenario that results in an unexpected outcome.
+            Write your reasoning in these steps, in this order:
+            1. Reference class and base rate. Choose a reference class of comparable past cases. Say what the class is, roughly how many cases it covers, and how often outcomes like each option happened. Give these base rates in a sentence, before you consider anything specific to this question.
+            2. Current evidence. Go through the specific facts in the background and research. For each one, say which options it moves up or down from their base rates, and roughly how far.
+            3. Time and status quo. Say how long until the outcome is known, and what the outcome would be if nothing changed.
+            4. Surprise. Briefly describe a scenario that leads to an unexpected outcome.
+            5. Adjusted forecast. Start from the base rates, apply your adjustments, and say how far you moved and why.
 
             {self._get_conditional_disclaimer_if_necessary(question)}
-            You write your rationale remembering that (1) good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time, and (2) good forecasters leave some moderate probability on most options to account for unexpected outcomes.
+            Good forecasters anchor on the base rates and move away from them only as far as the evidence justifies. They put extra weight on the status quo, since the world changes slowly most of the time, and they leave some moderate probability on most options to allow for unexpected outcomes.
 
             The last thing you write is your final probabilities for the N options in this order {question.options} as:
             Option_A: Probability_A
@@ -481,6 +589,7 @@ class GlassEarthBot(ForecastBot):
 
             The text you are parsing may prepend these options with some variation of "Option" which you should remove if not part of the option names I just gave you.
             Additionally, you may sometimes need to parse a 0% probability. Please do not skip options with 0% but rather make it an entry in your final list with 0% probability.
+            The text states base rates before its final answer. Return the final probabilities, not the base rates.
             {self._create_resolved_question_parsing_message()}
             """
         )
@@ -511,9 +620,9 @@ class GlassEarthBot(ForecastBot):
         )
         prompt = clean_indents(
             f"""
-            You are a professional forecaster interviewing for a job.
+            You are a professional forecaster. Your reasoning will be published next to your forecast.
 
-            Your interview question is:
+            Your question is:
             {question.question_text}
 
             Background:
@@ -538,16 +647,15 @@ class GlassEarthBot(ForecastBot):
             - Never use scientific notation.
             - Always start with a smaller number (more negative if negative) and then increase from there. The value for percentile 10 should always be less than the value for percentile 20, and so on.
 
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The outcome if nothing changed.
-            (c) The outcome if the current trend continued.
-            (d) The expectations of experts and markets.
-            (e) A brief description of an unexpected scenario that results in a low outcome.
-            (f) A brief description of an unexpected scenario that results in a high outcome.
+            Write your reasoning in these steps, in this order:
+            1. Reference class and base rate. Choose a reference class, such as past values of this quantity or of similar quantities. Say what the class is and what values were typical in it: a middle value and a range, in words, before you consider anything specific to now. Do not use the "Percentile" format here; keep it for your final answer.
+            2. Current evidence. Cover the outcome if nothing changed, the outcome if the current trend continued, and what experts and markets expect. For each, say whether it moves you up or down from the base rate, and roughly how far.
+            3. Time left. Say how long until the outcome is known.
+            4. Tails. Briefly describe an unexpected scenario that gives a low outcome and one that gives a high outcome.
+            5. Adjusted forecast. Start from the base rate, apply your adjustments, and say how far you moved and why.
 
             {self._get_conditional_disclaimer_if_necessary(question)}
-            You remind yourself that good forecasters are humble and set wide 90/10 confidence intervals to account for unknown unknowns.
+            You remind yourself that good forecasters anchor on the base rate, move only as far as the evidence justifies, and set wide 90/10 confidence intervals to account for unknown unknowns.
 
             The last thing you write is your final answer as:
             "
@@ -607,9 +715,9 @@ class GlassEarthBot(ForecastBot):
         )
         prompt = clean_indents(
             f"""
-            You are a professional forecaster interviewing for a job.
+            You are a professional forecaster. Your reasoning will be published next to your forecast.
 
-            Your interview question is:
+            Your question is:
             {question.question_text}
 
             Background:
@@ -633,16 +741,15 @@ class GlassEarthBot(ForecastBot):
             - Always start with a lower date chronologically and then increase from there.
             - Do NOT forget this. The dates must be written in chronological order starting at the earliest time at percentile 10 and increasing from there.
 
-            Before answering you write:
-            (a) The time left until the outcome to the question is known.
-            (b) The outcome if nothing changed.
-            (c) The outcome if the current trend continued.
-            (d) The expectations of experts and markets.
-            (e) A brief description of an unexpected scenario that results in a low outcome.
-            (f) A brief description of an unexpected scenario that results in a high outcome.
+            Write your reasoning in these steps, in this order:
+            1. Reference class and base rate. Choose a reference class, such as how long comparable events took in the past. Say what the class is and when such events typically happened: a middle date and a range, in words, before you consider anything specific to now. Do not use the "Percentile" format here; keep it for your final answer.
+            2. Current evidence. Cover the outcome if nothing changed, the outcome if the current trend continued, and what experts and markets expect. For each, say whether it moves you earlier or later than the base rate, and roughly how far.
+            3. Time left. Say how long until the outcome is known.
+            4. Tails. Briefly describe an unexpected scenario that gives an early outcome and one that gives a late outcome.
+            5. Adjusted forecast. Start from the base rate, apply your adjustments, and say how far you moved and why.
 
             {self._get_conditional_disclaimer_if_necessary(question)}
-            You remind yourself that good forecasters are humble and set wide 90/10 confidence intervals to account for unknown unknowns.
+            You remind yourself that good forecasters anchor on the base rate, move only as far as the evidence justifies, and set wide 90/10 confidence intervals to account for unknown unknowns.
 
             The last thing you write is your final answer as:
             "
@@ -706,7 +813,8 @@ class GlassEarthBot(ForecastBot):
         message = (
             "- The text may contain multiple percentile distributions (e.g. forecasts for several related questions/entities, or intermediate drafts before a final answer). You must return exactly ONE distribution: the single final distribution that answers the question stated above.\n"
             "- Never merge or concatenate percentile lists that refer to different entities, options, or scenarios. Each percentile should appear at most once in your output.\n"
-            "- If there are multiple final distributions and you cannot tell which one answers the question stated above, do not guess or combine them. Instead indicate that the answer is not explicitly given in the text."
+            "- If there are multiple final distributions and you cannot tell which one answers the question stated above, do not guess or combine them. Instead indicate that the answer is not explicitly given in the text.\n"
+            "- The text describes a base rate before its final answer. Return only the final percentile distribution, never the base rate."
         )
         if question.group_question_option is not None:
             message += (
