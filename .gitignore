@@ -2,6 +2,9 @@
 benchmarks/
 sandbox.py
 
+# Glass Earth: dry runs write here. Nothing in it is submitted or committed.
+forecasts/dry_run/
+
 
 ### General gitignore ###
 

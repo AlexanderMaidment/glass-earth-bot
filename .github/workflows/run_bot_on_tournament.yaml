@@ -20,6 +20,8 @@ jobs:
     # Actions > Variables). Set it to false to pause again.
     if: vars.GLASS_EARTH_LIVE == 'true'
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    permissions:
+      contents: write # lets the last step commit forecasts/ledger.jsonl
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
@@ -47,3 +49,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+      - name: Commit the forecast ledger
+        # Runs even if the bot step failed, so forecasts submitted before the
+        # failure are still recorded.
+        if: always()
+        run: |
+          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl

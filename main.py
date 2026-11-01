@@ -3,7 +3,7 @@ import asyncio
 import logging
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal, Sequence
 
 import dotenv
 
@@ -46,6 +46,16 @@ from forecasting_tools import (
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 from forecasting_tools.data_models.markdown_tree import MarkdownTree
 
+from ledger import (
+    DRY_RUN_LEDGER_PATH,
+    LEDGER_PATH,
+    ForecastLedger,
+    LedgerClient,
+    forecast_as_json,
+    ledger_entry,
+    payload_for,
+)
+
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -83,6 +93,15 @@ def _split_model_line(reasoning: str) -> tuple[str, str]:
     return first_line.removeprefix(_MODEL_MARKER), rest.lstrip("\n")
 
 
+def _question_ids_submitted_for(question: MetaculusQuestion) -> list[int]:
+    """The Metaculus question IDs that forecasting this question posts to."""
+    if isinstance(question, ConditionalQuestion):
+        parts = [question.parent, question.child, question.question_yes, question.question_no]
+    else:
+        parts = [question]
+    return [part.id_of_question for part in parts if part.id_of_question is not None]
+
+
 class GlassEarthBot(ForecastBot):
     """
     Glass Earth v0, built on FallTemplateBot2026, the Metaculus template bot for
@@ -93,6 +112,8 @@ class GlassEarthBot(ForecastBot):
       it for the current evidence.
     - The comment states the submitted forecast and how it was combined, and
       the bot will not publish a comment that leaves it out.
+    - Every forecast Metaculus accepts is appended to forecasts/ledger.jsonl
+      (see ledger.py), and questions already in the ledger are skipped.
 
     Notes from the template:
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
@@ -171,6 +192,20 @@ class GlassEarthBot(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+
+    def __init__(self, *, run_mode: str = "unknown", **kwargs: Any) -> None:
+        kwargs.setdefault("metaculus_client", LedgerClient())
+        super().__init__(**kwargs)
+        self.run_mode = run_mode
+        self.ledger = ForecastLedger(LEDGER_PATH)
+        self.dry_run_ledger = ForecastLedger(DRY_RUN_LEDGER_PATH)
+        self._ledger_contexts: dict[int, dict[str, Any]] = {}
+        if isinstance(self.metaculus_client, LedgerClient):
+            self.metaculus_client.on_forecast_accepted = self._record_submitted_forecast
+        elif self.publish_reports_to_metaculus:
+            raise ValueError(
+                "Publishing needs a LedgerClient, so that every submitted forecast is recorded"
+            )
 
     ##################################### ENSEMBLE #####################################
 
@@ -316,12 +351,12 @@ class GlassEarthBot(ForecastBot):
     @staticmethod
     def _combination_rule(question: MetaculusQuestion) -> str:
         if isinstance(question, BinaryQuestion):
-            return "the median of the model forecasts below, after each is held between 1% and 99%."
+            return "the median of the model forecasts, after each is held between 1% and 99%."
         if isinstance(question, MultipleChoiceQuestion):
-            return "the average of each option's probability across the model forecasts below."
+            return "the average of each option's probability across the model forecasts."
         if isinstance(question, (NumericQuestion, DateQuestion)):
-            return "the median of the model forecasts below, taken point by point along their cumulative distributions."
-        return "the forecasting-tools method for this question type, applied to the model forecasts below."
+            return "the median of the model forecasts, taken point by point along their cumulative distributions."
+        return "the forecasting-tools method for this question type, applied to the model forecasts."
 
     def _create_comment(
         self,
@@ -396,6 +431,128 @@ class GlassEarthBot(ForecastBot):
                 "The comment does not state the final prediction, so nothing will be published"
             )
         return comment
+
+    ##################################### LEDGER #####################################
+
+    async def forecast_questions(
+        self,
+        questions: Sequence[MetaculusQuestion],
+        return_exceptions: bool = False,
+    ) -> list[ForecastReport] | list[ForecastReport | BaseException]:
+        # A second guard against forecasting a question twice, next to the
+        # template's check of Metaculus: skip anything already in the ledger.
+        if self.skip_previously_forecasted_questions:
+            in_ledger = self.ledger.question_ids()
+            remaining = [q for q in questions if q.id_of_question not in in_ledger]
+            if len(remaining) != len(questions):
+                logger.info(
+                    f"Skipping {len(questions) - len(remaining)} questions already in the ledger"
+                )
+            questions = remaining
+        return await super().forecast_questions(questions, return_exceptions)
+
+    async def _run_individual_question(
+        self, question: MetaculusQuestion
+    ) -> ForecastReport:
+        try:
+            report = await super()._run_individual_question(question)
+            if not self.publish_reports_to_metaculus:
+                self._record_dry_run_forecast(report)
+            return report
+        finally:
+            for question_id in _question_ids_submitted_for(question):
+                self._ledger_contexts.pop(question_id, None)
+
+    def _create_unified_explanation(
+        self,
+        question: MetaculusQuestion,
+        research_prediction_collections: list[ResearchWithPredictions],
+        aggregated_prediction: PredictionTypes,
+        final_cost: float,
+        time_spent_in_minutes: float,
+    ) -> str:
+        explanation = super()._create_unified_explanation(
+            question,
+            research_prediction_collections,
+            aggregated_prediction,
+            final_cost,
+            time_spent_in_minutes,
+        )
+        # Publishing happens next, so keep what the ledger needs to know.
+        context = self._ledger_context(
+            question, research_prediction_collections, aggregated_prediction
+        )
+        for question_id in _question_ids_submitted_for(question):
+            self._ledger_contexts[question_id] = context
+        return explanation
+
+    def _ledger_context(
+        self,
+        question: MetaculusQuestion,
+        research_prediction_collections: list[ResearchWithPredictions],
+        aggregated_prediction: PredictionTypes,
+    ) -> dict[str, Any]:
+        report_type = DataOrganizer.get_report_type_for_question_type(type(question))
+        model_forecasts = []
+        for collection in research_prediction_collections:
+            for prediction in collection.predictions:
+                model, _ = _split_model_line(prediction.reasoning)
+                model_forecasts.append(
+                    {
+                        "model": model,
+                        "forecast": forecast_as_json(prediction.prediction_value),
+                        "forecast_readable": report_type.make_readable_prediction(
+                            prediction.prediction_value
+                        ),
+                    }
+                )
+        models_with_forecast = {entry["model"] for entry in model_forecasts}
+        return {
+            "post_id": question.id_of_post,
+            "url": question.page_url,
+            "type": getattr(question, "question_type", type(question).__name__),
+            "group_option": question.group_question_option,
+            "title": question.question_text,
+            "tournaments": question.tournament_slugs,
+            "final_forecast_readable": report_type.make_readable_prediction(
+                aggregated_prediction
+            ),
+            "combined_by": self._combination_rule(question),
+            "model_forecasts": model_forecasts,
+            "models_without_forecast": [
+                _model_label(model)
+                for model in ENSEMBLE_MODELS.values()
+                if _model_label(model) not in models_with_forecast
+            ],
+        }
+
+    def _record_submitted_forecast(
+        self, question_id: int, final_forecast: dict[str, Any]
+    ) -> None:
+        context = self._ledger_contexts.get(question_id, {})
+        self.ledger.append(
+            ledger_entry(
+                question_id=question_id,
+                final_forecast=final_forecast,
+                context=context,
+                run_mode=self.run_mode,
+            )
+        )
+        logger.info(f"Ledger: recorded the forecast submitted on question {question_id}")
+
+    def _record_dry_run_forecast(self, report: ForecastReport) -> None:
+        question_id = report.question.id_of_question
+        final_forecast = payload_for(report)
+        if question_id is None or final_forecast is None:
+            return
+        entry = ledger_entry(
+            question_id=question_id,
+            final_forecast=final_forecast,
+            context=self._ledger_contexts.get(question_id, {}),
+            run_mode=self.run_mode,
+        )
+        entry["dry_run"] = True
+        self.dry_run_ledger.append(entry)
 
     ##################################### RESEARCH #####################################
 
@@ -987,11 +1144,15 @@ if __name__ == "__main__":
     # Configure the bot. The models are set at the top of this file
     # (ENSEMBLE_MODELS, RESEARCH_MODEL and HELPER_MODEL).
     template_bot = GlassEarthBot(
+        run_mode=run_mode,
         research_reports_per_question=1,
         predictions_per_research_report=len(ENSEMBLE_MODELS),  # one per model
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
-        folder_to_save_reports_to=None,
+        # A dry run keeps its full reports for reading; git ignores this folder.
+        folder_to_save_reports_to=(
+            DRY_RUN_LEDGER_PATH.parent.as_posix() if args.dry_run else None
+        ),
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
     )

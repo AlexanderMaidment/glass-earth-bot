@@ -18,6 +18,8 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    permissions:
+      contents: write # lets the last step commit forecasts/ledger.jsonl
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
@@ -50,3 +52,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+      - name: Commit the forecast ledger
+        # Only a run with "publish" ticked submits anything. A dry run writes
+        # nothing here, so this step then finds nothing to commit.
+        if: always()
+        run: |
+          bash scripts/commit_and_push.sh "Ledger: test-area forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl
