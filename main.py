@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -37,23 +38,63 @@ from forecasting_tools import (
     PredictedOptionList,
     ReasonedPrediction,
     SmartSearcher,
+    ForecastReport,
     clean_indents,
     structure_output,
 )
+from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
+from forecasting_tools.data_models.markdown_tree import MarkdownTree
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
+# Glass Earth ensemble: one forecaster from each of three model families, all
+# called through OpenRouter. The IDs come from OpenRouter's public model list
+# (https://openrouter.ai/api/v1/models), checked on 2026-11-01. All three cost
+# US$2 per million input tokens and US$10 per million output tokens.
+ENSEMBLE_MODELS = {
+    "forecaster_openai": "openrouter/openai/gpt-6.1-sol",
+    "forecaster_anthropic": "openrouter/anthropic/claude-sonnet-5.5",
+    "forecaster_google": "openrouter/google/gemini-4-argon",
+}
+# ":online" adds OpenRouter's web search, which uses OpenAI's own search for
+# OpenAI models. The template's default researcher is no longer on OpenRouter.
+RESEARCH_MODEL = "openrouter/openai/gpt-6.1-terra:online"
+# A cheap model that summarises the research and reads the final numbers out
+# of each forecast.
+HELPER_MODEL = "openrouter/openai/gpt-6-luna"
 
-class FallTemplateBot2026(ForecastBot):
+# The ensemble member that the current forecast task belongs to. Each member
+# runs in its own asyncio task, so setting this affects only that member.
+_ensemble_member: ContextVar[str] = ContextVar("ensemble_member", default="default")
+_MODEL_MARKER = "Model: "
+
+
+def _model_label(model: str) -> str:
+    return model.removeprefix("openrouter/")
+
+
+def _split_model_line(reasoning: str) -> tuple[str, str]:
+    """Separate the "Model: ..." line that each ensemble forecast starts with."""
+    first_line, _, rest = reasoning.partition("\n")
+    if not first_line.startswith(_MODEL_MARKER):
+        return "unknown model", reasoning
+    return first_line.removeprefix(_MODEL_MARKER), rest.lstrip("\n")
+
+
+class GlassEarthBot(ForecastBot):
     """
+    Glass Earth v0, built on FallTemplateBot2026, the Metaculus template bot for
+    the Fall 2026 FutureEval Bot Tournament. Changes from the template:
+    - Each question gets one forecast from each model in ENSEMBLE_MODELS,
+      combined by the template's own _aggregate_predictions.
+
+    Notes from the template:
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
     This is a copy of what is used by Metaculus to run the Metac Bots in our benchmark, provided as a template for new bot makers.
     This template is given as-is, and is use-at-your-own-risk.
     We have covered most test cases in forecasting-tools it may be worth double checking key components locally.
     So far our track record has been 1 mentionable bug per season (affecting forecasts for 1-2% of total questions)
-
-    This bot is identical to SummerTemplateBot2026.
 
     The main entry point of this bot is `bot.forecast_on_tournament(tournament_id)` in the parent class.
     See the script at the bottom of the file for more details on how to run the bot.
@@ -125,6 +166,132 @@ class FallTemplateBot2026(ForecastBot):
     )
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
+
+    ##################################### ENSEMBLE #####################################
+
+    @classmethod
+    def _llm_config_defaults(cls) -> dict[str, str | GeneralLlm | None]:
+        forecasters: dict[str, str | GeneralLlm | None] = {
+            purpose: GeneralLlm(model=model, timeout=300, allowed_tries=2)
+            for purpose, model in ENSEMBLE_MODELS.items()
+        }
+        return {
+            "default": forecasters[next(iter(ENSEMBLE_MODELS))],
+            **forecasters,
+            "summarizer": GeneralLlm(model=HELPER_MODEL, timeout=120, allowed_tries=2),
+            "researcher": GeneralLlm(
+                model=RESEARCH_MODEL, timeout=300, allowed_tries=2
+            ),
+            "parser": GeneralLlm(model=HELPER_MODEL, timeout=120, allowed_tries=2),
+        }
+
+    async def _research_and_make_predictions(
+        self, question: MetaculusQuestion
+    ) -> ResearchWithPredictions[PredictionTypes]:
+        """
+        Same as ForecastBot's version, except that each prediction comes from a
+        different model in ENSEMBLE_MODELS instead of repeating one model.
+        The template's _aggregate_predictions then combines them: the median for
+        binary questions, the average of each option's probability for multiple
+        choice, and the median of the cumulative distributions for numeric and
+        date questions.
+        """
+        notepad = await self._get_notepad(question)
+        notepad.total_research_reports_attempted += 1
+        research = await self.run_research(question)
+        summary_report = await self.summarize_research(question, research)
+        research_to_use = (
+            summary_report if self.use_research_summary_to_forecast else research
+        )
+
+        tasks = [
+            self._make_prediction_with(purpose, question, research_to_use)
+            for purpose in ENSEMBLE_MODELS
+        ]
+        valid_predictions, errors, exception_group = (
+            await self._gather_results_and_exceptions(tasks)
+        )
+        if errors:
+            logger.warning(f"Encountered errors while predicting: {errors}")
+        if len(valid_predictions) == 0:
+            assert exception_group, "Exception group should not be None"
+            self._reraise_exception_with_prepended_message(
+                exception_group,
+                "Error while running research and predictions",
+            )
+        return ResearchWithPredictions(
+            research_report=research,
+            summary_report=summary_report,
+            errors=errors,
+            predictions=valid_predictions,
+        )
+
+    async def _make_prediction_with(
+        self, purpose: str, question: MetaculusQuestion, research: str
+    ) -> ReasonedPrediction[PredictionTypes]:
+        _ensemble_member.set(purpose)
+        model = _model_label(self.get_llm(purpose, "llm").model)
+        try:
+            prediction = await self._make_prediction(question, research)
+        except Exception as e:
+            raise RuntimeError(f"{model} failed: {e.__class__.__name__}: {e}") from e
+        return prediction.model_copy(
+            update={"reasoning": f"{_MODEL_MARKER}{model}\n\n{prediction.reasoning}"}
+        )
+
+    def _ensemble_llm(self) -> GeneralLlm:
+        return self.get_llm(_ensemble_member.get(), "llm")
+
+    @classmethod
+    def _format_and_expand_research_summary(
+        cls,
+        report_number: int,
+        report_type: type[ForecastReport],
+        predicted_research: ResearchWithPredictions,
+    ) -> str:
+        # Same as the template's, but names the model behind each forecast.
+        forecast_lines = ""
+        for forecast in predicted_research.predictions:
+            model, _ = _split_model_line(forecast.reasoning)
+            readable_prediction = report_type.make_readable_prediction(
+                forecast.prediction_value
+            )
+            forecast_lines += f"*{model}*: {readable_prediction}\n"
+
+        return clean_indents(
+            f"""
+            ## Report {report_number} Summary
+            ### Forecasts
+            {forecast_lines}
+
+            ### Research Summary
+            {predicted_research.summary_report}
+            """
+        )
+
+    def _format_forecaster_rationales(
+        self, report_number: int, researched_predictions: ResearchWithPredictions
+    ) -> str:
+        # Same as the template's, but titles each rationale with its model.
+        rationales = []
+        for forecast in researched_predictions.predictions:
+            model, reasoning = _split_model_line(forecast.reasoning)
+            sections = MarkdownTree.turn_markdown_into_report_sections(reasoning)
+            try:
+                modified_content = MarkdownTree.report_sections_to_markdown(sections, 3)
+            except Exception as e:
+                logger.error(f"Error formatting research report: {e}")
+                modified_content = MarkdownTree.report_sections_to_markdown(
+                    sections, None
+                ).replace("#", "[Hashtag]")
+            new_rationale = clean_indents(
+                f"""
+                ## R{report_number}: {model} reasoning
+                {modified_content}
+                """
+            )
+            rationales.append(new_rationale)
+        return "\n".join(rationales)
 
     ##################################### RESEARCH #####################################
 
@@ -235,7 +402,7 @@ class FallTemplateBot2026(ForecastBot):
         question: BinaryQuestion,
         prompt: str,
     ) -> ReasonedPrediction[float]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -317,7 +484,7 @@ class FallTemplateBot2026(ForecastBot):
             {self._create_resolved_question_parsing_message()}
             """
         )
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         predicted_option_list: PredictedOptionList = await structure_output(
             text_to_structure=reasoning,
@@ -400,7 +567,7 @@ class FallTemplateBot2026(ForecastBot):
         question: NumericQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -496,7 +663,7 @@ class FallTemplateBot2026(ForecastBot):
         question: DateQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -709,28 +876,16 @@ if __name__ == "__main__":
     publish_to_metaculus = not args.dry_run
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
-    template_bot = FallTemplateBot2026(
+    # Configure the bot. The models are set at the top of this file
+    # (ENSEMBLE_MODELS, RESEARCH_MODEL and HELPER_MODEL).
+    template_bot = GlassEarthBot(
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=len(ENSEMBLE_MODELS),  # one per model
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These
