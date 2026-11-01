@@ -1,0 +1,37 @@
+name: Timestamp the forecast ledger
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 0 * * *" # every day at 00:41 UTC (10:41 in Brisbane)
+
+# Add concurrency group to prevent parallel runs
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Proves when each version of forecasts/ledger.jsonl existed, using
+# OpenTimestamps. It is free: it makes no model calls, spends nothing, and
+# sends only a salted hash of the ledger to the public calendars. It reads the
+# ledger and never changes it. With no ledger yet, it does nothing.
+jobs:
+  timestamp_job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # lets the last step commit the receipts
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the OpenTimestamps client
+        run: pip install "opentimestamps-client==0.7.2"
+      - name: Upgrade earlier receipts and stamp the ledger
+        run: python scripts/timestamp_ledger.py
+      - name: Commit the receipts
+        # Runs even if stamping failed, so receipts upgraded earlier in the
+        # same run are kept.
+        if: always()
+        run: |
+          bash scripts/commit_and_push.sh "Proof: OpenTimestamps receipts for the forecast ledger" forecasts/proofs

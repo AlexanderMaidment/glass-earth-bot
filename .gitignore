@@ -4,6 +4,8 @@ sandbox.py
 
 # Glass Earth: dry runs write here. Nothing in it is submitted or committed.
 forecasts/dry_run/
+# Backups that `ots upgrade` makes; scripts/timestamp_ledger.py removes them.
+*.ots.bak
 
 
 ### General gitignore ###

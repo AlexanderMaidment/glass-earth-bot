@@ -18,9 +18,11 @@ export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 
+# Records are only ever added or extended, so never stage a deletion. A step
+# that broke halfway cannot remove a ledger or a receipt this way.
 for path in "$@"; do
   if [ -e "$path" ]; then
-    git add -A -- "$path"
+    git add --ignore-removal -- "$path"
   fi
 done
 

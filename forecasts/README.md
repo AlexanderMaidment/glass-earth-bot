@@ -37,3 +37,34 @@ and Metaculus makes those comments public after the question closes.
 
 A dry run submits nothing. It writes the forecast it would have submitted to
 `forecasts/dry_run/`, which git ignores.
+
+## proofs/
+
+Once a day, a workflow stamps the ledger with
+[OpenTimestamps](https://opentimestamps.org), if it has changed since the last
+stamp. Each receipt (`.ots` file) proves that the ledger, exactly as it was at
+one commit, existed no later than a certain Bitcoin block. Anyone can use a
+receipt to check that the forecasts in that version of the ledger were written
+by then. A forecast added later with hindsight, or edited after the event,
+would not match the earlier receipts.
+
+A new receipt is pending until a Bitcoin block confirms it, usually within a
+day. The next daily run upgrades it to a complete proof.
+
+`proofs/index.jsonl` has one line per receipt: when it was made, the ledger's
+SHA-256 hash, size in bytes and line count, the commit whose ledger it covers
+(`ledger_commit`), and the receipt's path.
+
+To check a receipt yourself, use a Unix-style shell such as Git Bash (Windows
+PowerShell's `>` changes the bytes of what it saves):
+
+1. Take a line from `proofs/index.jsonl`.
+2. Save that version of the ledger:
+   `git show <ledger_commit>:forecasts/ledger.jsonl > ledger-snapshot.jsonl`
+3. Check that `sha256sum ledger-snapshot.jsonl` matches `ledger_sha256`.
+4. Verify the receipt: drop `ledger-snapshot.jsonl` and the `.ots` file onto
+   https://opentimestamps.org, or run
+   `ots verify -f ledger-snapshot.jsonl <receipt>` (this needs a Bitcoin node).
+
+Lines are only ever added to the ledger, so the snapshot is also the first
+`ledger_bytes` bytes of today's ledger.
