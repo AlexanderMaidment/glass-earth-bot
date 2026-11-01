@@ -2,6 +2,11 @@ name: Test Bot
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Post the forecasts to the bot testing area on Metaculus (not scored). Leave unticked for a dry run that posts nothing."
+        type: boolean
+        default: false
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -28,10 +33,15 @@ jobs:
         run: uv sync --locked
       - name: Run bot
         run: |
-          uv run python main.py --mode test_questions
+          if [ "$PUBLISH" = "true" ]; then
+            uv run python main.py --mode test_questions
+          else
+            uv run python main.py --mode test_questions --dry-run
+          fi
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
+          PUBLISH: ${{ inputs.publish }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}

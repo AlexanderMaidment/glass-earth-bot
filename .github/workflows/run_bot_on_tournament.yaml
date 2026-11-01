@@ -14,6 +14,11 @@ concurrency:
 # Daily job to run the simple forecast bot
 jobs:
   forecast_job:
+    # Glass Earth: this job stays off, on schedule and by hand, until live
+    # forecasting is approved. To switch it on, add the repository variable
+    # GLASS_EARTH_LIVE with the value true (Settings > Secrets and variables >
+    # Actions > Variables). Set it to false to pause again.
+    if: vars.GLASS_EARTH_LIVE == 'true'
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
