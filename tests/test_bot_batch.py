@@ -154,7 +154,7 @@ class TournamentWorkflowBatchTests(OfflineTestCase):
             self.assertIn(f"*Final Prediction*: {stated}", text)
             self.assertIn(
                 "*How the final prediction was made*: 1 forecast from "
-                "anthropic/claude-opus-5.5, held between 1% and 99%.",
+                "anthropic/claude-opus-5.5, held between 2% and 98%.",
                 text,
             )
             self.assertTrue(comments[0]["is_private"])

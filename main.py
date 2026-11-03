@@ -56,6 +56,7 @@ from forecasting_tools.data_models.markdown_tree import MarkdownTree
 # Imported as a module: run() looks up credit.fetch_key_info when it runs, so
 # the offline tests can replace it and never reach the network.
 import credit
+from guardrails import BINARY_MAX, BINARY_MIN, apply_guardrails, guard_binary
 from ledger import (
     DRY_RUN_LEDGER_PATH,
     LEDGER_PATH,
@@ -171,6 +172,11 @@ _MODEL_MARKER = "Model: "
 
 def _model_label(model: str) -> str:
     return model.removeprefix("openrouter/")
+
+
+def _percent(fraction: float) -> str:
+    """0.02 as "2%", 0.008333 as "0.83%", for the comment."""
+    return f"{round(fraction * 100, 2):g}%"
 
 
 def _member_label(model: str, member: int, ensemble_size: int) -> str:
@@ -665,28 +671,38 @@ class GlassEarthBot(ForecastBot):
             # percent. Rounding to match means the comment states exactly the
             # value that is submitted.
             aggregated = round(aggregated, 4)
-        return aggregated
+        # The guardrails (guardrails.py) on the combined forecast, the parts of
+        # a conditional one included. What this returns is what the comment
+        # states, the ledger records and Metaculus is sent.
+        return apply_guardrails(aggregated)
 
     def _combination_rule(self, question: MetaculusQuestion) -> str:
         model = _model_label(self._forecaster_llm().model)
+        binary_guardrail = f"held between {_percent(BINARY_MIN)} and {_percent(BINARY_MAX)}"
         if self.ensemble_size == 1:
             # One forecast: say so, rather than "the median of 1".
             source = f"1 forecast from {model}"
             if isinstance(question, BinaryQuestion):
-                return f"{source}, held between 1% and 99%."
+                return f"{source}, {binary_guardrail}."
             if isinstance(question, MultipleChoiceQuestion):
                 return f"{source}, its option probabilities rescaled to sum to 100%."
             if isinstance(question, (NumericQuestion, DateQuestion)):
                 return f"{source}, submitted as its cumulative distribution."
-            return f"{source}, submitted through the forecasting-tools method for this question type."
+            return (
+                f"{source}, submitted through the forecasting-tools method for this question type, "
+                f"each yes/no part {binary_guardrail}."
+            )
         source = f"{self.ensemble_size} independent forecasts from {model}"
         if isinstance(question, BinaryQuestion):
-            return f"the median of {source}, after each is held between 1% and 99%."
+            return f"the median of {source}, each {binary_guardrail}."
         if isinstance(question, MultipleChoiceQuestion):
             return f"the median of each option's probability across {source}, rescaled to sum to 100%."
         if isinstance(question, (NumericQuestion, DateQuestion)):
             return f"the median of {source}, taken point by point along their cumulative distributions."
-        return f"the forecasting-tools method for this question type, applied to {source}."
+        return (
+            f"the forecasting-tools method for this question type, applied to {source}, "
+            f"each yes/no part {binary_guardrail}."
+        )
 
     @staticmethod
     def _outcome_line(question: MetaculusQuestion, outcome: str, cost: str | None = None) -> str:
@@ -1293,7 +1309,9 @@ class GlassEarthBot(ForecastBot):
             num_validation_samples=self._structure_output_validation_samples,
             additional_instructions=parsing_instructions,
         )
-        decimal_pred = max(0.01, min(0.99, binary_prediction.prediction_in_decimal))
+        # Each forecast gets the yes/no guardrail too (the template holds it
+        # between 1% and 99%), so the comment shows every forecast as used.
+        decimal_pred = guard_binary(binary_prediction.prediction_in_decimal)
 
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {decimal_pred}."

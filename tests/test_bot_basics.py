@@ -58,7 +58,7 @@ class DefaultSetupTests(OfflineTestCase):
         self.assertIn("*Final Prediction*: 30.0%", report.explanation)
         self.assertIn(
             "*How the final prediction was made*: 1 forecast from anthropic/claude-opus-5.5, "
-            "held between 1% and 99%.",
+            "held between 2% and 98%.",
             report.explanation,
         )
         self.assertNotIn("median of 1", report.explanation)
@@ -81,7 +81,7 @@ class DefaultSetupTests(OfflineTestCase):
         self.assertEqual(
             bot3._combination_rule(binary()),
             "the median of 3 independent forecasts from anthropic/claude-opus-5.5, "
-            "after each is held between 1% and 99%.",
+            "each held between 2% and 98%.",
         )
         self.assertEqual(main._member_label("openrouter/x/y", 1, 1), "x/y")
         self.assertEqual(main._member_label("openrouter/x/y", 2, 3), "x/y (member 2 of 3)")
