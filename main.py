@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import os
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Literal, Sequence
@@ -36,6 +37,7 @@ from forecasting_tools import (
     PredictionAffirmed,
     BinaryPrediction,
     PredictedOptionList,
+    QuestionState,
     ReasonedPrediction,
     SmartSearcher,
     DataOrganizer,
@@ -56,7 +58,10 @@ from ledger import (
     payload_for,
 )
 
-dotenv.load_dotenv()
+# The offline tests set GLASS_EARTH_SKIP_DOTENV=1 so that they never read the
+# real keys in .env.
+if os.getenv("GLASS_EARTH_SKIP_DOTENV") != "1":
+    dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Glass Earth ensemble: one forecaster from each of three model families, all
@@ -83,6 +88,32 @@ _MODEL_MARKER = "Model: "
 
 def _model_label(model: str) -> str:
     return model.removeprefix("openrouter/")
+
+
+def _question_for_prompt(question: MetaculusQuestion) -> str:
+    """
+    The question as the models see it. A group sub-question carries its own
+    label (a company, a date range, a measure), which its title may not
+    mention, so the label is stated here.
+    """
+    text = question.question_text
+    option = question.group_question_option
+    if option:
+        text += (
+            "\n\nThis is one sub-question of a group of related questions. "
+            f'This sub-question is only about: "{option}". '
+            f'Forecast "{option}" alone, not the other sub-questions of the group.'
+        )
+    dates = []
+    if question.close_time is not None:
+        dates.append(f"It closes for forecasting on {question.close_time.strftime('%Y-%m-%d %H:%M')} UTC")
+    if question.scheduled_resolution_time is not None:
+        dates.append(
+            f"it is scheduled to resolve on {question.scheduled_resolution_time.strftime('%Y-%m-%d %H:%M')} UTC"
+        )
+    if dates:
+        text += "\n\n" + ", and ".join(dates) + "."
+    return text
 
 
 def _split_model_line(reasoning: str) -> tuple[str, str]:
@@ -399,10 +430,13 @@ class GlassEarthBot(ForecastBot):
         )
         llms = self.make_llm_dict() if show_metadata else disabled
         bot_name = self.__class__.__name__ if show_metadata else disabled
+        question_line = question.question_text
+        if question.group_question_option:
+            question_line += f" (sub-question: {question.group_question_option})"
         comment = clean_indents(
             f"""
             # SUMMARY
-            *Question*: {question.question_text}
+            *Question*: {question_line}
             *Final Prediction*: {final_prediction}
             *How the final prediction was made*: {self._combination_rule(question)}
             *Total Cost*: {cost}
@@ -440,6 +474,16 @@ class GlassEarthBot(ForecastBot):
         questions: Sequence[MetaculusQuestion],
         return_exceptions: bool = False,
     ) -> list[ForecastReport] | list[ForecastReport | BaseException]:
+        # A group can hold closed or upcoming sub-questions next to open ones;
+        # forecast only the open ones.
+        open_questions = [
+            q for q in questions if q.state is None or q.state == QuestionState.OPEN
+        ]
+        if len(open_questions) != len(questions):
+            logger.info(
+                f"Skipping {len(questions) - len(open_questions)} questions that are not open"
+            )
+        questions = open_questions
         # A second guard against forecasting a question twice, next to the
         # template's check of Metaculus: skip anything already in the ledger.
         if self.skip_previously_forecasted_questions:
@@ -607,7 +651,7 @@ class GlassEarthBot(ForecastBot):
             You do not produce forecasts yourself.
 
             Question:
-            {question.question_text}
+            {_question_for_prompt(question)}
 
             This question's outcome will be determined by the specific criteria below:
             {question.resolution_criteria}
@@ -627,7 +671,7 @@ class GlassEarthBot(ForecastBot):
             You are a professional forecaster. Your reasoning will be published next to your forecast.
 
             Your question is:
-            {question.question_text}
+            {_question_for_prompt(question)}
 
             Question background:
             {question.background_info}
@@ -698,7 +742,7 @@ class GlassEarthBot(ForecastBot):
             You are a professional forecaster. Your reasoning will be published next to your forecast.
 
             Your question is:
-            {question.question_text}
+            {_question_for_prompt(question)}
 
             The options are: {question.options}
 
@@ -781,7 +825,7 @@ class GlassEarthBot(ForecastBot):
             You are a professional forecaster. Your reasoning will be published next to your forecast.
 
             Your question is:
-            {question.question_text}
+            {_question_for_prompt(question)}
 
             Background:
             {question.background_info}
@@ -876,7 +920,7 @@ class GlassEarthBot(ForecastBot):
             You are a professional forecaster. Your reasoning will be published next to your forecast.
 
             Your question is:
-            {question.question_text}
+            {_question_for_prompt(question)}
 
             Background:
             {question.background_info}

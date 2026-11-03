@@ -1,0 +1,139 @@
+{
+  "_synthetic": "SYNTHETIC FIXTURE. Invented posts shaped like a page of the Metaculus /api/posts/ list (group posts with numeric and discrete sub-questions, as Market Pulse uses). No value here was observed; companies, numbers and dates are made up for the offline tests.",
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "id": 9001,
+      "title": "SYNTHETIC: What will the quarterly revenues of these made-up companies be?",
+      "nr_forecasters": 5,
+      "forecasts_count": 9,
+      "published_at": "2026-10-07T20:00:00Z",
+      "projects": {
+        "tournament": [{"id": 77001, "slug": "market-pulse-26q4", "name": "SYNTHETIC tournament"}],
+        "default_project": {"id": 77001, "visibility": "normal"}
+      },
+      "group_of_questions": {
+        "description": "SYNTHETIC background shared by the group.",
+        "resolution_criteria": "SYNTHETIC: each sub-question resolves as the first reported quarterly revenue of its company.",
+        "fine_print": "SYNTHETIC fine print.",
+        "questions": [
+          {
+            "id": 90011,
+            "title": "SYNTHETIC: What will the quarterly revenues of these made-up companies be?",
+            "label": "Examplecorp",
+            "type": "numeric",
+            "status": "open",
+            "unit": "$",
+            "open_upper_bound": true,
+            "open_lower_bound": true,
+            "scaling": {"range_min": 100.0, "range_max": 200.0, "zero_point": null, "inbound_outcome_count": 200, "nominal_min": null, "nominal_max": null, "continuous_range": null},
+            "open_time": "2026-10-07T20:00:00Z",
+            "scheduled_close_time": "2099-01-01T10:00:00Z",
+            "scheduled_resolve_time": "2099-01-01T20:00:00Z",
+            "question_weight": 1.0,
+            "my_forecasts": {"history": [], "latest": null}
+          },
+          {
+            "id": 90012,
+            "title": "SYNTHETIC: What will the quarterly revenues of these made-up companies be?",
+            "label": "Samplesoft",
+            "type": "numeric",
+            "status": "open",
+            "unit": "$",
+            "open_upper_bound": true,
+            "open_lower_bound": true,
+            "scaling": {"range_min": 1000.0, "range_max": 2000.0, "zero_point": null, "inbound_outcome_count": 200, "nominal_min": null, "nominal_max": null, "continuous_range": null},
+            "open_time": "2026-10-07T20:00:00Z",
+            "scheduled_close_time": "2099-01-01T10:00:00Z",
+            "scheduled_resolve_time": "2099-01-01T20:00:00Z",
+            "question_weight": 1.0,
+            "my_forecasts": {"history": [], "latest": null}
+          },
+          {
+            "id": 90013,
+            "title": "SYNTHETIC: What will the quarterly revenues of these made-up companies be?",
+            "label": "Closedco",
+            "type": "numeric",
+            "status": "closed",
+            "unit": "$",
+            "open_upper_bound": true,
+            "open_lower_bound": true,
+            "scaling": {"range_min": 10.0, "range_max": 20.0, "zero_point": null, "inbound_outcome_count": 200, "nominal_min": null, "nominal_max": null, "continuous_range": null},
+            "open_time": "2026-10-07T20:00:00Z",
+            "scheduled_close_time": "2026-10-21T10:00:00Z",
+            "scheduled_resolve_time": "2026-10-21T20:00:00Z",
+            "question_weight": 1.0,
+            "my_forecasts": {"history": [], "latest": null}
+          }
+        ]
+      }
+    },
+    {
+      "id": 9002,
+      "title": "SYNTHETIC: What will a made-up company guide for next quarter?",
+      "nr_forecasters": 4,
+      "forecasts_count": 6,
+      "published_at": "2026-10-07T20:00:00Z",
+      "projects": {
+        "tournament": [{"id": 77001, "slug": "market-pulse-26q4", "name": "SYNTHETIC tournament"}],
+        "default_project": {"id": 77001, "visibility": "normal"}
+      },
+      "group_of_questions": {
+        "description": "SYNTHETIC background for the guidance group.",
+        "resolution_criteria": "SYNTHETIC: the midpoint of the guided range.",
+        "fine_print": "SYNTHETIC fine print.",
+        "questions": [
+          {
+            "id": 90021,
+            "title": "SYNTHETIC: What will a made-up company guide for next quarter?",
+            "label": "Revenue (synthetic)",
+            "type": "discrete",
+            "status": "open",
+            "unit": "Billion $",
+            "open_upper_bound": true,
+            "open_lower_bound": true,
+            "scaling": {"range_min": 117.5, "range_max": 135.5, "zero_point": null, "inbound_outcome_count": 18, "nominal_min": 118.0, "nominal_max": 135.0, "continuous_range": null},
+            "open_time": "2026-10-07T20:00:00Z",
+            "scheduled_close_time": "2099-01-01T11:00:00Z",
+            "scheduled_resolve_time": "2099-01-01T21:00:00Z",
+            "question_weight": 1.0,
+            "my_forecasts": {"history": [], "latest": null}
+          },
+          {
+            "id": 90022,
+            "title": "SYNTHETIC: What will a made-up company guide for next quarter?",
+            "label": "Gross margin (synthetic)",
+            "type": "discrete",
+            "status": "open",
+            "unit": "%",
+            "open_upper_bound": true,
+            "open_lower_bound": true,
+            "scaling": {"range_min": 68.95, "range_max": 73.05, "zero_point": null, "inbound_outcome_count": 41, "nominal_min": 69.0, "nominal_max": 73.0, "continuous_range": null},
+            "open_time": "2026-10-07T20:00:00Z",
+            "scheduled_close_time": "2099-01-01T11:00:00Z",
+            "scheduled_resolve_time": "2099-01-01T21:00:00Z",
+            "question_weight": 1.0,
+            "my_forecasts": {"history": [], "latest": null}
+          },
+          {
+            "id": 90023,
+            "title": "SYNTHETIC: What will a made-up company guide for next quarter?",
+            "label": "Upcoming measure (synthetic)",
+            "type": "discrete",
+            "status": "upcoming",
+            "unit": "Billion $",
+            "open_upper_bound": true,
+            "open_lower_bound": true,
+            "scaling": {"range_min": 9.45, "range_max": 11.25, "zero_point": null, "inbound_outcome_count": 18, "nominal_min": 9.5, "nominal_max": 11.2, "continuous_range": null},
+            "open_time": "2099-01-01T00:00:00Z",
+            "scheduled_close_time": "2099-02-01T11:00:00Z",
+            "scheduled_resolve_time": "2099-02-01T21:00:00Z",
+            "question_weight": 1.0,
+            "my_forecasts": {"history": [], "latest": null}
+          }
+        ]
+      }
+    }
+  ]
+}
