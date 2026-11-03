@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 import warnings
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 
 # Placeholder values shipped in .env.template. If a real env var still equals
@@ -55,10 +55,11 @@ def silence_noisy_dependencies() -> None:
     litellm_logger.propagate = False
 
 
-def check_environment(strict: bool = True) -> None:
+def check_environment(strict: bool = True, out: Callable[[str], None] = print) -> None:
     """
     Verify METACULUS_TOKEN and at least one LLM key are set. On failure with
-    strict=True, exits the process with a non-zero status.
+    strict=True, exits the process with a non-zero status. Glass Earth: `out`
+    writes the problems (run_log.show in main.py, so a quiet run shows them).
     """
     problems: list[str] = []
 
@@ -81,16 +82,18 @@ def check_environment(strict: bool = True) -> None:
         )
 
     if problems:
-        print("❌  Setup problems:")
+        out("❌  Setup problems:")
         for p in problems:
-            print(f"    • {p}")
+            out(f"    • {p}")
         if strict:
             sys.exit(1)
 
 
-def print_startup_banner(run_mode: str, will_publish: bool) -> None:
+def print_startup_banner(
+    run_mode: str, will_publish: bool, out: Callable[[str], None] = print
+) -> None:
     publish = "publish=yes" if will_publish else "publish=no (dry run)"
-    print(f"🤖  Running mode={run_mode}, {publish}\n")
+    out(f"🤖  Running mode={run_mode}, {publish}\n")
 
 
 def print_run_summary_banner(

@@ -4,6 +4,8 @@ import logging
 import math
 import os
 import statistics
+import sys
+from collections import Counter
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -77,6 +79,21 @@ from routing import (
     ensemble_size_from_env,
     high_value_model_from_env,
     prize_value_usd,
+)
+from run_log import (
+    DETAILS,
+    LOG_FORMAT,
+    counts_line,
+    done,
+    error_kind,
+    failed,
+    note,
+    public_exit,
+    question_line,
+    quiet_wanted,
+    show,
+    skipped,
+    start_quiet,
 )
 from sealed_ledger import (
     KEY_ENV,
@@ -671,6 +688,10 @@ class GlassEarthBot(ForecastBot):
             return f"the median of {source}, taken point by point along their cumulative distributions."
         return f"the forecasting-tools method for this question type, applied to {source}."
 
+    @staticmethod
+    def _outcome_line(question: MetaculusQuestion, outcome: str, cost: str | None = None) -> str:
+        return question_line(question.id_of_question, question.page_url, question.id_of_post, outcome, cost)
+
     def _cost_text(self, question: MetaculusQuestion) -> str:
         cost = self.meter.question_cost(question.id_of_question)
         if cost.unknown_calls:
@@ -763,9 +784,10 @@ class GlassEarthBot(ForecastBot):
 
     def _select_questions(
         self, questions: Sequence[MetaculusQuestion]
-    ) -> list[tuple[MetaculusQuestion, str]]:
+    ) -> tuple[list[tuple[MetaculusQuestion, str]], list[tuple[MetaculusQuestion, str]]]:
         """
-        The questions to forecast now, each with the reason.
+        The questions to forecast now, each with the reason, and the others,
+        each with why it was skipped (one of run_log.SKIP_REASONS).
         - Only open questions: a group can hold closed or upcoming
           sub-questions next to open ones.
         - Market Pulse (a re-forecast policy): forecast when due.
@@ -778,12 +800,14 @@ class GlassEarthBot(ForecastBot):
         # Any line at all counts for the one-forecast rule, even an unreadable time.
         in_ledger = self.ledger.question_ids()
         selected: list[tuple[MetaculusQuestion, str]] = []
+        skips: list[tuple[MetaculusQuestion, str]] = []
         already = 0
         for question in questions:
             if question.state is not None and question.state != QuestionState.OPEN:
                 logger.info(
                     f"Not forecasting {question.page_url} ({question.group_question_option}): it is {question.state.value}"
                 )
+                skips.append((question, "not open"))
                 continue
             policy = policy_for(question.tournament_slugs)
             if policy is not None:
@@ -800,11 +824,13 @@ class GlassEarthBot(ForecastBot):
                 if not due:
                     self.skipped_not_due.append(f"{question.page_url}: {reason}")
                     logger.info(f"Not forecasting {question.page_url} yet, {reason}")
+                    skips.append((question, "not due"))
                     continue
                 selected.append((question, reason))
             elif self.skip_previously_forecasted_questions:
                 if question.already_forecasted or question.id_of_question in in_ledger:
                     already += 1
+                    skips.append((question, "already forecast"))
                     continue
                 selected.append((question, "first forecast"))
             else:
@@ -813,7 +839,7 @@ class GlassEarthBot(ForecastBot):
             logger.info(
                 f"Skipping {already} questions already forecast (on Metaculus or in the ledger)"
             )
-        return selected
+        return selected, skips
 
     @staticmethod
     def _forecasts_per_member(question: MetaculusQuestion) -> int:
@@ -926,8 +952,17 @@ class GlassEarthBot(ForecastBot):
             # Never a full line in the public ledger: stop before any spending.
             raise LedgerKeyError(f"Publishing needs the ledger key ({KEY_ENV}) to seal the ledger.")
         reports: list[ForecastReport | BaseException] = []
+        publishing = self.publish_reports_to_metaculus
         with self.meter.one_batch_at_a_time():
-            for question, reason in self._select_questions(questions):
+            selected, skips = self._select_questions(questions)
+            # Each question's outcome as a content-free line (run_log.note):
+            # in the console of a live run on GitHub Actions, in the log of
+            # any other run.
+            skip_counts = Counter(reason for _, reason in skips)
+            for question, reason in skips:
+                note(self._outcome_line(question, skipped(reason)))
+            posted = failures = 0
+            for question, reason in selected:
                 route = self._route_for(question)
                 tag = _question_tag(question)
                 # The calculated worst case with the route's model (Opus for
@@ -942,6 +977,8 @@ class GlassEarthBot(ForecastBot):
                         f"{' (' + question.group_question_option + ')' if question.group_question_option else ''}: {route.reason}"
                     )
                     self.meter.record_skip(tag, route.reason, route.reserved_usd, worst_case)
+                    skip_counts["daily cap"] += 1
+                    note(self._outcome_line(question, skipped("daily cap")))
                     continue
                 logger.info(
                     f"Forecasting {question.page_url} with {_model_label(route.model or '')}: "
@@ -960,7 +997,12 @@ class GlassEarthBot(ForecastBot):
                         reports.append(
                             await self._run_individual_question_with_error_propagation(question)
                         )
+                    posted += 1
+                    note(self._outcome_line(question, done(publishing), self._cost_text(question)))
                 except Exception as e:
+                    failures += 1
+                    # The exception's type only: its message can hold model output.
+                    note(self._outcome_line(question, failed(e), self._cost_text(question)))
                     if not return_exceptions:
                         raise
                     reports.append(e)
@@ -968,6 +1010,16 @@ class GlassEarthBot(ForecastBot):
                     _current_route.reset(tokens[0])
                     _forecast_reason.reset(tokens[1])
                     current_question.reset(tokens[2])
+            note(
+                counts_line(
+                    found=len(questions),
+                    selected=len(selected),
+                    skips=skip_counts,
+                    posted=posted,
+                    failures=failures,
+                    publishing=publishing,
+                )
+            )
         if self.folder_to_save_reports_to:
             finished = [r for r in reports if not isinstance(r, BaseException)]
             ForecastReport.save_object_list_to_file_path(
@@ -1757,22 +1809,24 @@ def _reveal_closed_questions(
             key, post_statuses, ledger_path=LEDGER_PATH, boxes_path=SEALED_BOXES_PATH
         )
     except Exception as error:  # revealing must never stop forecasting
-        logger.error(
-            f"Ledger reveals failed ({type(error).__name__}); nothing more is revealed "
+        logger.exception("Ledger reveals failed")
+        show(
+            f"Ledger reveals failed ({error_kind(error)}); nothing more is revealed "
             "this run, and forecasting carries on."
         )
         return
-    print(report.line())
+    show(report.line())
     for problem in report.problems():
         logger.warning(f"Ledger reveals: {problem}")
         if github_actions:
-            print(f"::warning title=Sealed ledger::{credit._workflow_command_text(problem)}")
+            show(f"::warning title=Sealed ledger::{credit._workflow_command_text(problem)}")
         credit._add_to_summary(step_summary, f"**Sealed ledger.** {problem}")
 
 
 async def _forecast_target(
     bot: GlassEarthBot, target: int | str, max_questions: int | None
 ) -> list[ForecastReport | BaseException]:
+    note(f"Forecasting on {target}.")
     if max_questions is None:
         return await bot.forecast_on_tournament(target, return_exceptions=True)
     questions = bot.metaculus_client.get_all_open_questions_from_tournament(target)
@@ -1813,11 +1867,14 @@ def run(
     except ValueError as error:
         raise SystemExit(f"Stopped before forecasting: {error}") from error
 
-    check_environment(strict=True)
+    # The lines through show() carry no question content, so a live run on
+    # GitHub Actions shows them (run_log.py); everything else it writes goes
+    # only to its log file on the runner.
+    check_environment(strict=True, out=show)
     github_actions = os.getenv("GITHUB_ACTIONS") == "true"
     step_summary = os.getenv("GITHUB_STEP_SUMMARY")
-    print_startup_banner(run_mode, will_publish=publish_to_metaculus)
-    print(setup_text(ensemble_size, high_value_model))
+    print_startup_banner(run_mode, will_publish=publish_to_metaculus, out=show)
+    show(setup_text(ensemble_size, high_value_model))
 
     # What is left on the OpenRouter key, from OpenRouter's free key check. A
     # check that fails gives Unknown and the run carries on; the key's own
@@ -1826,9 +1883,9 @@ def run(
         os.getenv("OPENROUTER_API_KEY"),
         fetch_key_info if fetch_key_info is not None else credit.fetch_key_info,
     )
-    print(key_credit.line())
+    show(key_credit.line())
     if key_credit.low:
-        credit.warn(key_credit, github_actions=github_actions, step_summary=step_summary)
+        credit.warn(key_credit, github_actions=github_actions, step_summary=step_summary, out=show)
 
     log_path, read_paths = spend_log_paths()
     # The meter takes each UTC day's cap from the setting, so a run still
@@ -1840,9 +1897,9 @@ def run(
         run_mode=run_mode,
         dry_run=not publish_to_metaculus,
     )
-    print(cap_setting.describe(meter.day))
-    print(reservation_text(question_reservation, ensemble_size))
-    print(meter.summary_line().replace(" in this run", " so far, before this run"))
+    show(cap_setting.describe(meter.day))
+    show(reservation_text(question_reservation, ensemble_size))
+    show(meter.summary_line().replace(" in this run", " so far, before this run"))
 
     # Configure the bot. The models are set at the top of this file and in
     # routing.py (DEFAULT_FORECASTER, HIGH_VALUE_FORECASTER).
@@ -1926,15 +1983,18 @@ def run(
             _forecast_target(bot, "bot-testing-area", args.max_questions)
         )
 
+    # The template's report summary and banner name each question and can
+    # quote errors, so in a quiet run they go only to the log file (as does
+    # any print), and each question's outcome has already been noted.
     bot.log_report_summary(forecast_reports)
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
-    print(meter.summary_line())
+    show(meter.summary_line())
     if bot.skipped_not_due:
-        print(f"{len(bot.skipped_not_due)} Market Pulse question(s) were not due for a new forecast.")
+        show(f"{len(bot.skipped_not_due)} Market Pulse question(s) were not due for a new forecast.")
     # With all forecasting done: on GitHub, a publishing run with low credit
     # ends with a failing exit code once per UTC day, so that GitHub emails
     # the owner. The day goes in forecasts/credit_warnings.jsonl first.
@@ -1950,9 +2010,34 @@ def run(
     return forecast_reports
 
 
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+def main(argv: Sequence[str] | None = None) -> int:
+    """
+    The command line (python main.py). A live run on GitHub Actions shows
+    only content-free lines and keeps everything else in a log file on the
+    runner (run_log.py); an exception that ends it shows as its type only.
+    Any other run logs to the console as before.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = build_arg_parser().parse_args(argv)
+    if not quiet_wanted(publishing=not args.dry_run):
+        logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+        run(argv)
+        return 0
+    path = start_quiet()
+    show(
+        "Live run on GitHub Actions: this log shows only lines with no question content. "
+        f"The full log stays on the runner as {path.name} and is never uploaded or committed."
     )
-    run()
+    try:
+        run(argv)
+    except SystemExit as stop:
+        return public_exit(stop)
+    except BaseException as error:  # never the message: it can hold model output
+        logger.error("The run stopped on an exception", exc_info=True)
+        show(f"Stopped: {error_kind(error)}. {DETAILS}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
