@@ -27,10 +27,11 @@ import json
 import logging
 import math
 import os
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -55,6 +56,9 @@ DEFAULT_HIGH_VALUE_RESERVE_USD = Decimal("2.00")
 DEFAULT_RESERVE_SHARE = Decimal("0.4")
 
 CAP_ENV = "GLASS_EARTH_DAILY_CAP_USD"
+# The last UTC day (YYYY-MM-DD) the cap in CAP_ENV applies. From the next day
+# the cap is DEFAULT_DAILY_CAP_USD again. Unset means no end date.
+CAP_UNTIL_ENV = "GLASS_EARTH_DAILY_CAP_UNTIL_UTC"
 RESERVE_ENV = "GLASS_EARTH_HIGH_VALUE_RESERVE_USD"
 
 # A conservative token estimate for text the bot sends: about 4 characters
@@ -286,23 +290,149 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def daily_cap_from_env(
-    override: str | None = None, reserve_override: str | None = None
-) -> tuple[Decimal, Decimal]:
-    """(cap, reserve) from the command line, the environment, or the defaults."""
-    raw_cap = override if override is not None else os.getenv(CAP_ENV)
+_UTC_DAY_TEXT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _as_date(day: str) -> date:
+    return date.fromisoformat(day)
+
+
+def utc_day_setting(raw: str | None, name: str = CAP_UNTIL_ENV) -> str | None:
+    """A UTC day written YYYY-MM-DD, or None when unset. Anything else stops the run."""
+    # GitHub passes an unset repository variable as an empty string.
+    if raw is None or raw.strip() == "":
+        return None
+    text = raw.strip()
+    if _UTC_DAY_TEXT.fullmatch(text):
+        try:
+            return _as_date(text).isoformat()
+        except ValueError:
+            pass
+    raise ValueError(
+        f"{name} must be a date written YYYY-MM-DD (the last UTC day the cap in {CAP_ENV} "
+        f"applies), but it is {raw!r}. Leave it unset for a cap with no end date."
+    )
+
+
+def amount_setting(raw: str, name: str) -> Decimal:
+    """An amount in US dollars from a setting. Anything else stops the run."""
+    try:
+        amount: Decimal | None = to_decimal(raw.strip())
+    except (TypeError, ValueError):
+        amount = None
+    if amount is None or not amount.is_finite():
+        raise ValueError(f"{name} must be an amount in US dollars, such as 2.00, but it is {raw!r}.")
+    return amount
+
+
+@dataclass(frozen=True)
+class DailyCapSetting:
+    """
+    The daily cap as it was set. `cap` applies through the UTC day
+    `until_utc_day` (YYYY-MM-DD; None means no end date) and
+    DEFAULT_DAILY_CAP_USD after it. `reserve` is the high-value reserve as
+    set, or None for the default rule, which follows whichever cap applies.
+    """
+
+    cap: Decimal
+    reserve: Decimal | None = None
+    until_utc_day: str | None = None
+
+    def __post_init__(self) -> None:
+        for amount in (self.cap, self.reserve):
+            if amount is None:
+                continue
+            if not isinstance(amount, Decimal):
+                raise TypeError("The cap and reserve must be Decimal")
+            if not amount.is_finite():
+                raise ValueError("The cap and reserve must be finite amounts")
+        if self.cap < ZERO:
+            raise ValueError("The daily cap cannot be negative")
+        if self.reserve is not None and self.reserve < ZERO:
+            raise ValueError("The high-value reserve cannot be negative")
+        if self.until_utc_day is not None:
+            object.__setattr__(self, "until_utc_day", utc_day_setting(self.until_utc_day))
+
+    def applies_on(self, day: str) -> bool:
+        """Whether `cap` (rather than the default) is the cap on this UTC day."""
+        return self.until_utc_day is None or _as_date(day) <= _as_date(self.until_utc_day)
+
+    def for_day(self, day: str) -> tuple[Decimal, Decimal]:
+        """(cap, reserve) in force on a UTC day written YYYY-MM-DD."""
+        cap = self.cap if self.applies_on(day) else DEFAULT_DAILY_CAP_USD
+        if self.reserve is None:
+            reserve = min(DEFAULT_HIGH_VALUE_RESERVE_USD, cap * DEFAULT_RESERVE_SHARE)
+        else:
+            reserve = self.reserve
+        return cap, min(reserve, cap)
+
+    def describe(self, day: str) -> str:
+        """The cap in force on a UTC day, in one line for the run log."""
+        cap, reserve = self.for_day(day)
+        text = f"Daily cap: US${money_display(cap)} a UTC day"
+        if self.until_utc_day is not None:
+            if self.applies_on(day):
+                text += (
+                    f" until the end of {self.until_utc_day}, then "
+                    f"US${money_display(DEFAULT_DAILY_CAP_USD)} ({CAP_UNTIL_ENV})"
+                )
+            else:
+                text += (
+                    f" (the default again: the US${money_display(self.cap)} cap ended "
+                    f"with {self.until_utc_day}, {CAP_UNTIL_ENV})"
+                )
+        return text + f"; US${money_display(reserve)} of it is kept for high-value questions."
+
+
+def daily_cap_setting_from_env(
+    override: str | None = None,
+    reserve_override: str | None = None,
+    until_override: str | None = None,
+) -> DailyCapSetting:
+    """
+    The cap and reserve from the command line, the environment, or the
+    defaults. The end date (GLASS_EARTH_DAILY_CAP_UNTIL_UTC) applies to the
+    cap from the environment. A cap given on the command line is for that run
+    only and has no end date, though a malformed end date still stops the run.
+    """
+    from_command_line = override is not None
+    raw_cap = override if from_command_line else os.getenv(CAP_ENV)
+    cap_name = "--daily-cap-usd" if from_command_line else CAP_ENV
+    cap = (
+        DEFAULT_DAILY_CAP_USD
+        if raw_cap is None or raw_cap.strip() == ""
+        else amount_setting(raw_cap, cap_name)
+    )
     raw_reserve = reserve_override if reserve_override is not None else os.getenv(RESERVE_ENV)
-    cap = DEFAULT_DAILY_CAP_USD if not raw_cap else to_decimal(raw_cap.strip())
-    if raw_reserve:
-        reserve = to_decimal(raw_reserve.strip())
-    else:
-        reserve = min(DEFAULT_HIGH_VALUE_RESERVE_USD, cap * DEFAULT_RESERVE_SHARE)
+    reserve_name = "--high-value-reserve-usd" if reserve_override is not None else RESERVE_ENV
+    reserve = (
+        None
+        if raw_reserve is None or raw_reserve.strip() == ""
+        else amount_setting(raw_reserve, reserve_name)
+    )
+    until = utc_day_setting(
+        until_override if until_override is not None else os.getenv(CAP_UNTIL_ENV)
+    )
     if cap < ZERO:
-        raise ValueError("The daily cap cannot be negative")
-    if reserve < ZERO:
-        raise ValueError("The high-value reserve cannot be negative")
-    reserve = min(reserve, cap)
-    return cap, reserve
+        raise ValueError(f"The daily cap cannot be negative ({cap_name} is {raw_cap!r})")
+    if reserve is not None and reserve < ZERO:
+        raise ValueError(
+            f"The high-value reserve cannot be negative ({reserve_name} is {raw_reserve!r})"
+        )
+    return DailyCapSetting(
+        cap=cap, reserve=reserve, until_utc_day=None if from_command_line else until
+    )
+
+
+def daily_cap_from_env(
+    override: str | None = None,
+    reserve_override: str | None = None,
+    *,
+    today: str | None = None,
+) -> tuple[Decimal, Decimal]:
+    """(cap, reserve) in force today, or on the UTC day given, from the settings."""
+    setting = daily_cap_setting_from_env(override, reserve_override)
+    return setting.for_day(today if today is not None else utc_day(_now()))
 
 
 @dataclass
@@ -336,24 +466,31 @@ class SpendMeter:
     def __init__(
         self,
         *,
-        cap: Decimal,
-        reserve: Decimal,
+        cap: Decimal | None = None,
+        reserve: Decimal | None = None,
+        cap_setting: DailyCapSetting | None = None,
         log_path: Path,
         read_paths: Iterable[Path],
         run_mode: str,
         dry_run: bool,
         clock: Callable[[], datetime] = _now,
     ) -> None:
-        if not isinstance(cap, Decimal) or not isinstance(reserve, Decimal):
-            raise TypeError("The cap and reserve must be Decimal")
-        self.cap = cap
-        self.reserve = min(reserve, cap)
+        # Either a cap and reserve for every day, or a setting that can change
+        # the cap from one UTC day to the next (an end date).
+        if cap_setting is None:
+            if not isinstance(cap, Decimal) or not isinstance(reserve, Decimal):
+                raise TypeError("The cap and reserve must be Decimal")
+            cap_setting = DailyCapSetting(cap=cap, reserve=reserve)
+        elif cap is not None or reserve is not None:
+            raise TypeError("Give the meter a cap and reserve, or a cap setting, not both")
+        self.cap_setting = cap_setting
         self.log_path = log_path
         self.read_paths = list(dict.fromkeys([*read_paths, log_path]))
         self.run_mode = run_mode
         self.dry_run = dry_run
         self.clock = clock
         self.day = utc_day(clock())
+        self.cap, self.reserve = cap_setting.for_day(self.day)
         self.spent_before_run = self._read_spent_today()
         self.spent_this_run = ZERO
         self.in_flight = ZERO
@@ -389,6 +526,9 @@ class SpendMeter:
         today = utc_day(self.clock())
         if today != self.day:
             self.day = today
+            # A run still going at midnight takes the new day's cap, which an
+            # end date (GLASS_EARTH_DAILY_CAP_UNTIL_UTC) can make different.
+            self.cap, self.reserve = self.cap_setting.for_day(today)
             self.spent_before_run = self._read_spent_today()
             self.spent_this_run = ZERO
 

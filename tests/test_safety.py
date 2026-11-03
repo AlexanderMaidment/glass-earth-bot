@@ -49,6 +49,10 @@ class WorkflowGateTests(unittest.TestCase):
             self.assertIn("forecasts/spend.jsonl", body, name)
             self.assertLess(body.index("Run the offline tests"), body.index("- name: Run bot"), name)
             self.assertIn("GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}", body, name)
+            # The cap's end date, after which it is the default US$2.00 again.
+            self.assertIn(
+                "GLASS_EARTH_DAILY_CAP_UNTIL_UTC: ${{ vars.GLASS_EARTH_DAILY_CAP_UNTIL_UTC }}", body, name
+            )
             # The forecasting setup comes from repository variables too.
             self.assertIn("GLASS_EARTH_ENSEMBLE_SIZE: ${{ vars.GLASS_EARTH_ENSEMBLE_SIZE }}", body, name)
             self.assertIn("GLASS_EARTH_HIGH_VALUE_MODEL: ${{ vars.GLASS_EARTH_HIGH_VALUE_MODEL }}", body, name)

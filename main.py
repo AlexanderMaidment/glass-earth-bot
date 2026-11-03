@@ -79,7 +79,7 @@ from spend import (
     QuestionTag,
     SpendMeter,
     current_question,
-    daily_cap_from_env,
+    daily_cap_setting_from_env,
     estimate_tokens,
     money_text,
     spend_log_paths,
@@ -373,11 +373,9 @@ class GlassEarthBot(ForecastBot):
                 "GlassEarthBot builds its own metered models, so that every call counts against the cap"
             )
         if spend_meter is None:
-            cap, reserve = daily_cap_from_env()
             log_path, read_paths = spend_log_paths()
             spend_meter = SpendMeter(
-                cap=cap,
-                reserve=reserve,
+                cap_setting=daily_cap_setting_from_env(),
                 log_path=log_path,
                 read_paths=read_paths,
                 run_mode=run_mode,
@@ -1612,7 +1610,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--daily-cap-usd",
         type=str,
         default=None,
-        help="The daily spend cap in US dollars for this run (default: GLASS_EARTH_DAILY_CAP_USD, else 2.00)",
+        help=(
+            "The daily spend cap in US dollars for this run, with no end date (default: "
+            "GLASS_EARTH_DAILY_CAP_USD until GLASS_EARTH_DAILY_CAP_UNTIL_UTC, else 2.00)"
+        ),
     )
     parser.add_argument(
         "--high-value-reserve-usd",
@@ -1647,7 +1648,7 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
     try:
         ensemble_size = ensemble_size_from_env()
         high_value_model = high_value_model_from_env()
-        cap, reserve = daily_cap_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
+        cap_setting = daily_cap_setting_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
     except ValueError as error:
         raise SystemExit(f"Stopped before forecasting: {error}") from error
 
@@ -1657,14 +1658,16 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
     print(setup_text(ensemble_size, high_value_model))
 
     log_path, read_paths = spend_log_paths()
+    # The meter takes each UTC day's cap from the setting, so a run still
+    # going at midnight after the cap's end date gets the default cap.
     meter = SpendMeter(
-        cap=cap,
-        reserve=reserve,
+        cap_setting=cap_setting,
         log_path=log_path,
         read_paths=read_paths,
         run_mode=run_mode,
         dry_run=not publish_to_metaculus,
     )
+    print(cap_setting.describe(meter.day))
     print(meter.summary_line().replace(" in this run", " so far, before this run"))
 
     # Configure the bot. The models are set at the top of this file and in

@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from support import OfflineTestCase, load_fixture
@@ -97,6 +98,9 @@ class CliDryRunTests(OfflineTestCase):
             ("GLASS_EARTH_ENSEMBLE_SIZE", "7"),
             ("GLASS_EARTH_ENSEMBLE_SIZE", "three"),
             ("GLASS_EARTH_HIGH_VALUE_MODEL", "yes"),
+            ("GLASS_EARTH_DAILY_CAP_USD", "four"),
+            ("GLASS_EARTH_DAILY_CAP_UNTIL_UTC", "8 November"),
+            ("GLASS_EARTH_DAILY_CAP_UNTIL_UTC", "2026-11-31"),
         ):
             self.set_env(**{name: value})
             with contextlib.redirect_stdout(io.StringIO()):
@@ -108,3 +112,23 @@ class CliDryRunTests(OfflineTestCase):
         self.assertEqual(self.metaculus.gets, [])
         self.assertEqual(self.models.calls, [])
         self.assertFalse(Path("forecasts").exists())
+
+    def test_the_cap_with_an_end_date_reaches_the_spend_record(self):
+        import main
+
+        today = datetime.now(timezone.utc).date()
+        self.set_env(GLASS_EARTH_DAILY_CAP_USD="4.00")
+        # SYNTHETIC end dates: the last day was yesterday, then it is today.
+        for until, cap, said in (
+            ((today - timedelta(days=1)).isoformat(), "2.00", "the default again"),
+            (today.isoformat(), "4.00", f"until the end of {today.isoformat()}"),
+        ):
+            self.set_env(GLASS_EARTH_DAILY_CAP_UNTIL_UTC=until)
+            Path("forecasts/dry_run/spend.jsonl").unlink(missing_ok=True)
+            with contextlib.redirect_stdout(io.StringIO()) as console:
+                reports = main.run(["--mode", "test_questions", "--dry-run", "--max-questions", "1"])
+            self.assertFalse(isinstance(reports[0], BaseException))
+            self.assertIn(said, console.getvalue())
+            lines = self.read_jsonl("forecasts/dry_run/spend.jsonl")
+            self.assertTrue(lines)
+            self.assertTrue(all(line["daily_cap_usd"] == cap for line in lines), until)

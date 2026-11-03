@@ -80,6 +80,134 @@ class CapEnvTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             spend.daily_cap_from_env("-1")
 
+    def test_unusable_amounts_stop_with_the_setting_named(self):
+        for value in ("four", "4,00", "NaN", "Infinity", "-Infinity"):
+            with self.assertRaises(ValueError, msg=repr(value)) as caught:
+                spend.daily_cap_from_env(value)
+            self.assertIn("--daily-cap-usd", str(caught.exception))
+            with self.assertRaises(ValueError, msg=repr(value)) as caught:
+                spend.daily_cap_from_env("2.00", value)
+            self.assertIn("--high-value-reserve-usd", str(caught.exception))
+
+
+class DatedCapTests(unittest.TestCase):
+    """
+    GLASS_EARTH_DAILY_CAP_UNTIL_UTC: the last UTC day the cap in
+    GLASS_EARTH_DAILY_CAP_USD applies. Amounts and days are SYNTHETIC.
+    """
+
+    def set_env(self, name, value):
+        previous = os.environ.get(name)
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+        self.addCleanup(self._restore, name, previous)
+
+    @staticmethod
+    def _restore(name, previous):
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+    def setUp(self):
+        self.set_env(spend.CAP_ENV, "4.00")
+        self.set_env(spend.CAP_UNTIL_ENV, "2026-11-08")
+        self.set_env(spend.RESERVE_ENV, None)
+
+    def test_the_cap_applies_through_its_last_day_then_the_default(self):
+        setting = spend.daily_cap_setting_from_env()
+        self.assertEqual(setting.until_utc_day, "2026-11-08")
+        # Before and on the last day: US$4.00, and the default reserve rule
+        # keeps 40% of it (US$1.60) for high-value questions.
+        for day in ("2026-11-02", "2026-11-03", "2026-11-08"):
+            self.assertEqual(setting.for_day(day), (Decimal("4.00"), Decimal("1.60")), day)
+        # After it: the default US$2.00, and the reserve follows it (US$0.80).
+        for day in ("2026-11-09", "2027-01-01"):
+            self.assertEqual(setting.for_day(day), (Decimal("2.00"), Decimal("0.80")), day)
+        self.assertEqual(spend.daily_cap_from_env(today="2026-11-08"), (Decimal("4.00"), Decimal("1.60")))
+        self.assertEqual(spend.daily_cap_from_env(today="2026-11-09"), (Decimal("2.00"), Decimal("0.80")))
+        self.assertIn("until the end of 2026-11-08", setting.describe("2026-11-08"))
+        self.assertIn("the default again", setting.describe("2026-11-09"))
+
+    def test_unset_means_no_end_date(self):
+        # GitHub passes an unset repository variable as an empty string.
+        for unset in (None, "", "  "):
+            self.set_env(spend.CAP_UNTIL_ENV, unset)
+            setting = spend.daily_cap_from_env(today="2099-12-31")
+            self.assertEqual(setting, (Decimal("4.00"), Decimal("1.60")), repr(unset))
+
+    def test_a_set_reserve_stays_within_whichever_cap_applies(self):
+        self.set_env(spend.RESERVE_ENV, "3.00")
+        setting = spend.daily_cap_setting_from_env()
+        self.assertEqual(setting.for_day("2026-11-08"), (Decimal("4.00"), Decimal("3.00")))
+        self.assertEqual(setting.for_day("2026-11-09"), (Decimal("2.00"), Decimal("2.00")))
+
+    def test_a_malformed_date_stops_with_the_variable_named(self):
+        for value in (
+            "8 Nov 2026",
+            "2026-11-8",
+            "2026/11/08",
+            "20261108",
+            "2026-02-30",
+            "2026-11-08T00:00",
+            "tomorrow",
+            "٢٠٢٦-١١-٠٨",
+        ):
+            self.set_env(spend.CAP_UNTIL_ENV, value)
+            with self.assertRaises(ValueError, msg=repr(value)) as caught:
+                spend.daily_cap_setting_from_env()
+            self.assertIn("GLASS_EARTH_DAILY_CAP_UNTIL_UTC", str(caught.exception))
+            self.assertIn("YYYY-MM-DD", str(caught.exception))
+
+    def test_a_command_line_cap_has_no_end_date(self):
+        setting = spend.daily_cap_setting_from_env("3.00")
+        self.assertIsNone(setting.until_utc_day)
+        self.assertEqual(setting.for_day("2026-12-01")[0], Decimal("3.00"))
+        # A malformed end date still stops the run.
+        self.set_env(spend.CAP_UNTIL_ENV, "next week")
+        with self.assertRaises(ValueError):
+            spend.daily_cap_setting_from_env("3.00")
+
+    def test_a_run_still_going_at_midnight_takes_the_new_days_cap(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "spend.jsonl"
+        clock = {"now": datetime(2026, 11, 8, 23, 59, tzinfo=timezone.utc)}
+        meter = spend.SpendMeter(
+            cap_setting=spend.daily_cap_setting_from_env(),
+            log_path=path,
+            read_paths=[path],
+            run_mode="offline-test",
+            dry_run=True,
+            clock=lambda: clock["now"],
+        )
+        self.assertEqual((meter.cap, meter.reserve), (Decimal("4.00"), Decimal("1.60")))
+        model = "openrouter/openai/gpt-6-luna"
+        meter.settle(meter.reserve_call(Decimal("0.10"), model, "parser"), CallUsage(10, 10, None, Decimal("0.10")))
+        clock["now"] = datetime(2026, 11, 9, 0, 1, tzinfo=timezone.utc)
+        # US$2.50 would fit under the old cap, but not under the new day's.
+        self.assertFalse(meter.can_afford(Decimal("2.50")))
+        self.assertEqual((meter.cap, meter.reserve), (Decimal("2.00"), Decimal("0.80")))
+        meter.settle(meter.reserve_call(Decimal("0.10"), model, "parser"), CallUsage(10, 10, None, Decimal("0.10")))
+        # Each record states the cap in force when it was written.
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([r["utc_day"] for r in records], ["2026-11-08", "2026-11-09"])
+        self.assertEqual([r["daily_cap_usd"] for r in records], ["4.00", "2.00"])
+
+    def test_meter_takes_a_cap_and_reserve_or_a_setting(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "spend.jsonl"
+        common = dict(log_path=path, read_paths=[path], run_mode="offline-test", dry_run=True)
+        with self.assertRaises(TypeError):
+            spend.SpendMeter(cap=Decimal("1"), reserve=Decimal("0"), cap_setting=spend.DailyCapSetting(Decimal("1")), **common)
+        with self.assertRaises(TypeError):
+            spend.SpendMeter(cap=Decimal("1"), **common)
+        with self.assertRaises(TypeError):
+            spend.DailyCapSetting(cap=4)
+
 
 class MeterTests(unittest.TestCase):
     def setUp(self):
