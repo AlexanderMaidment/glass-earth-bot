@@ -16,7 +16,7 @@ from forecasting_tools import (
     PredictedOptionList,
 )
 
-from support import FAKE_TOKEN, OfflineTestCase
+from support import FAKE_LEDGER_KEY, FAKE_TOKEN, OfflineTestCase
 
 COMMON = dict(
     background_info="SYNTHETIC background.",
@@ -192,16 +192,19 @@ class CommentAndLedgerTests(OfflineTestCase):
     def test_publish_records_exactly_what_was_sent(self):
         bot = self.make_bot(publish=True, skip=True)
         asyncio.run(bot.forecast_questions([binary(), multiple_choice()], return_exceptions=True))
-        lines = {l["question_id"]: l for l in self.read_jsonl("forecasts/ledger.jsonl")}
+        # Sealed in the public ledger; the record in each box is exactly what was sent.
+        records = {r["question_id"]: r for r in self.sealed_records()}
+        self.assertEqual(len(records), 2)
         for sent in self.metaculus.forecasts():
             body = {k: v for k, v in sent.items() if k not in ("question", "source")}
-            self.assertEqual(lines[sent["question"]]["final_forecast"], body)
+            self.assertEqual(records[sent["question"]]["final_forecast"], body)
         for comment in self.metaculus.comments():
             self.assertTrue(comment["is_private"])
-        raw = Path("forecasts/ledger.jsonl").read_bytes()
-        self.assertNotIn(FAKE_TOKEN.encode(), raw)
-        self.assertNotIn(b"\r\n", raw)
-        for line in lines.values():
+        for path in ("forecasts/ledger.jsonl", "forecasts/sealed_boxes.jsonl"):
+            raw = Path(path).read_bytes()
+            self.assertNotIn(FAKE_TOKEN.encode(), raw)
+            self.assertNotIn(b"\r\n", raw)
+        for line in self.read_jsonl("forecasts/ledger.jsonl"):
             self.assertRegex(line["recorded_at_utc"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
     def test_second_run_skips_questions_in_the_ledger(self):
@@ -216,10 +219,11 @@ class CommentAndLedgerTests(OfflineTestCase):
     def test_publishing_without_a_ledger_client_is_refused(self):
         import main
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "LedgerClient"):
             main.GlassEarthBot(
                 run_mode="x",
                 spend_meter=self.make_meter(),
+                ledger_key=FAKE_LEDGER_KEY,
                 publish_reports_to_metaculus=True,
                 metaculus_client=MetaculusClient(),
             )

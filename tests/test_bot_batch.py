@@ -17,7 +17,7 @@ from forecasting_tools import BinaryQuestion
 from forecasting_tools.data_models.binary_report import BinaryReport
 
 from spend import OverlappingBatchRefused
-from support import OfflineTestCase
+from support import FAKE_LEDGER_KEY_TEXT, OfflineTestCase
 
 FUTUREEVAL = "fall-futureeval-2026"
 POST_IDS = [7000 + n for n in range(1, 11)]
@@ -82,11 +82,12 @@ class TournamentWorkflowBatchTests(OfflineTestCase):
     def setUp(self):
         super().setUp()
         # The environment run_bot_on_tournament.yaml gives main.py: GitHub
-        # Actions, the two secrets, and every repository variable unset,
-        # which GitHub passes as an empty string.
+        # Actions, the secrets (the ledger key SYNTHETIC), and every
+        # repository variable unset, which GitHub passes as an empty string.
         self.set_env(
             GITHUB_ACTIONS="true",
             OPENROUTER_API_KEY="sk-or-synthetic-batch-key",
+            GLASS_EARTH_LEDGER_KEY=FAKE_LEDGER_KEY_TEXT,
             GLASS_EARTH_DAILY_CAP_USD="",
             GLASS_EARTH_HIGH_VALUE_RESERVE_USD="",
             GLASS_EARTH_ENSEMBLE_SIZE="",
@@ -243,7 +244,7 @@ class TournamentWorkflowBatchTests(OfflineTestCase):
         # (US$0.81 for three Opus forecasts, calculated). At US$0.6118 per
         # Fable question (SYNTHETIC), questions 1 to 4 get Fable (1.8354 +
         # 2.06 + 0.81 is under 5.00); questions 5 to 10 fall back to Opus.
-        ledger = sorted(self.read_jsonl("forecasts/ledger.jsonl"), key=lambda line: line["question_id"])
+        ledger = sorted(self.sealed_records(), key=lambda line: line["question_id"])
         models = [line["forecaster_model"] for line in ledger]
         self.assertEqual(
             models, ["anthropic/claude-fable-5.1"] * 4 + ["anthropic/claude-opus-5.5"] * 6

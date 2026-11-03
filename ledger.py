@@ -1,20 +1,23 @@
 """
 The Glass Earth forecast ledger.
 
-Every forecast that Metaculus accepts from this bot is appended to
-forecasts/ledger.jsonl as one JSON line, at the moment Metaculus accepts it.
-The workflow that ran the bot commits the file, and the daily timestamp
-workflow proves when each version of it existed. A dry run writes the forecast
-it would have submitted to forecasts/dry_run/ledger.jsonl instead, which git
-ignores.
+Every forecast that Metaculus accepts from this bot is recorded at the moment
+Metaculus accepts it, sealed until its question closes (sealed_ledger.py):
+its encrypted record goes in forecasts/sealed_boxes.jsonl, then a sealed
+line in forecasts/ledger.jsonl. Once Metaculus reports the question closed
+or resolved, a later live run appends the record to the ledger. The workflow
+that ran the bot commits both files, and the daily timestamp workflow proves
+when each version of the ledger existed. A dry run writes the full line it
+would have written, unsealed, to forecasts/dry_run/ledger.jsonl instead,
+which git ignores.
 
-The ledger is public, so it never holds error messages or anything read from
-the environment except the GitHub commit and run that made each forecast.
+The ledger is public, so it never holds error messages, text copied from
+Metaculus, or anything read from the environment except the GitHub commit
+and run that made each forecast.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -32,11 +35,16 @@ from forecasting_tools import (
 )
 from pydantic import BaseModel
 
+from sealed_ledger import BOXES_FILE, LEDGER_FILE, append_json_line, is_reveal_line, read_json_lines
+
 logger = logging.getLogger(__name__)
 
-LEDGER_PATH = Path("forecasts/ledger.jsonl")
+LEDGER_PATH = Path(LEDGER_FILE)
+SEALED_BOXES_PATH = Path(BOXES_FILE)
 DRY_RUN_LEDGER_PATH = Path("forecasts/dry_run/ledger.jsonl")
-LEDGER_VERSION = 2
+# Version 3 adds scheduled_close_time_utc. From version 3 the public ledger
+# holds sealed lines and their reveals, never full lines.
+LEDGER_VERSION = 3
 
 
 class LedgerClient(MetaculusClient):
@@ -60,43 +68,33 @@ class ForecastLedger:
         self.path = path
 
     def append(self, entry: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=True) + "\n"
-        with open(self.path, "a", encoding="utf-8", newline="\n") as file:
-            file.write(line)
+        append_json_line(self.path, entry)
+
+    def forecast_lines(self) -> list[dict[str, Any]]:
+        """
+        One line per forecast, in order: sealed lines, and full lines (a dry
+        run's, or any written before sealing). A reveal line repeats the
+        forecast of an earlier sealed line, so it is left out.
+        """
+        return [line for line in read_json_lines(self.path) if not is_reveal_line(line)]
 
     def question_ids(self) -> set[int]:
-        if not self.path.exists():
-            return set()
-        question_ids: set[int] = set()
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        for line_number, line in enumerate(lines, start=1):
-            if not line.strip():
-                continue
-            try:
-                question_id = json.loads(line).get("question_id")
-            except json.JSONDecodeError:
-                logger.warning(f"Skipping unreadable line {line_number} of {self.path}")
-                continue
-            if isinstance(question_id, int):
-                question_ids.add(question_id)
-        return question_ids
+        return {
+            line["question_id"]
+            for line in self.forecast_lines()
+            if isinstance(line.get("question_id"), int)
+        }
 
     def last_recorded_at(self) -> dict[int, datetime]:
-        """The time of the latest line for each question in the ledger."""
-        if not self.path.exists():
-            return {}
+        """The time of the latest forecast for each question in the ledger."""
         latest: dict[int, datetime] = {}
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
+        for line in self.forecast_lines():
+            question_id = line.get("question_id")
             try:
-                entry = json.loads(line)
-                question_id = entry.get("question_id")
                 recorded = datetime.strptime(
-                    entry.get("recorded_at_utc", ""), "%Y-%m-%dT%H:%M:%SZ"
+                    line.get("recorded_at_utc", ""), "%Y-%m-%dT%H:%M:%SZ"
                 ).replace(tzinfo=timezone.utc)
-            except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+            except (ValueError, TypeError):
                 continue
             if isinstance(question_id, int) and (
                 question_id not in latest or recorded > latest[question_id]
@@ -158,8 +156,11 @@ def ledger_entry(
     run_mode: str,
 ) -> dict[str, Any]:
     """
-    One ledger line. `context` describes the question and the model forecasts;
-    `final_forecast` is exactly what Metaculus was sent.
+    One full ledger line. `context` describes the question and the model
+    forecasts; `final_forecast` is exactly what Metaculus was sent. A dry run
+    writes this line as it is; a live run seals it (sealed_ledger.seal_entry),
+    and every field here must be listed in sealed_ledger.RECORD_FIELDS or
+    sealed_ledger.WITHHELD_FIELDS.
     """
     server = os.getenv("GITHUB_SERVER_URL")
     repository = os.getenv("GITHUB_REPOSITORY")
@@ -179,6 +180,7 @@ def ledger_entry(
         "group_option": context.get("group_option"),
         "title": context.get("title"),
         "tournaments": context.get("tournaments"),
+        "scheduled_close_time_utc": context.get("scheduled_close_time_utc"),
         "run_mode": run_mode,
         "final_forecast": final_forecast,
         "final_forecast_readable": context.get("final_forecast_readable"),

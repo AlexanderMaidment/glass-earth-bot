@@ -154,7 +154,11 @@ class RunTests(OfflineTestCase):
     def setUp(self):
         super().setUp()
         self.summary = Path(self._tmp.name) / "step_summary.md"
-        self.set_env(OPENROUTER_API_KEY=FAKE_KEY, GITHUB_STEP_SUMMARY=str(self.summary))
+        self.set_env(
+            OPENROUTER_API_KEY=FAKE_KEY,
+            GITHUB_STEP_SUMMARY=str(self.summary),
+            GLASS_EARTH_LEDGER_KEY=support.FAKE_LEDGER_KEY_TEXT,
+        )
         page = load_fixture("synthetic_group_posts.json")
         for post in page["results"]:
             post["projects"]["tournament"][0]["slug"] = "bot-testing-area"

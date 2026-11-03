@@ -359,7 +359,10 @@ class OfflineTestCase(unittest.TestCase):
         high_value_model: bool | None = None,
         question_reservation_usd: Decimal | None = None,
     ):
-        """A bot as main.run builds it. The settings default to the environment."""
+        """
+        A bot as main.run builds it. The settings default to the environment;
+        a publishing bot seals the ledger with FAKE_LEDGER_KEY.
+        """
         import main
 
         return main.GlassEarthBot(
@@ -368,6 +371,7 @@ class OfflineTestCase(unittest.TestCase):
             ensemble_size=ensemble_size,
             high_value_model=high_value_model,
             question_reservation_usd=question_reservation_usd,
+            ledger_key=FAKE_LEDGER_KEY if publish else None,
             research_reports_per_question=1,
             publish_reports_to_metaculus=publish,
             skip_previously_forecasted_questions=skip,
@@ -390,3 +394,26 @@ class OfflineTestCase(unittest.TestCase):
         if not p.exists():
             return []
         return [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def sealed_records(
+        self,
+        ledger: str | Path = "forecasts/ledger.jsonl",
+        boxes: str | Path = "forecasts/sealed_boxes.jsonl",
+    ) -> list[dict[str, Any]]:
+        """
+        The record of each forecast line in the public ledger, in order, from
+        its box. Every forecast line must be a sealed line with only its six
+        fields, whose box opens with FAKE_LEDGER_KEY and matches it.
+        """
+        from sealed_ledger import SEALED_LINE_FIELDS, check_record_matches, is_reveal_line, open_box
+
+        box_for = {line["seal_sha256"]: line["box"] for line in self.read_jsonl(boxes)}
+        records = []
+        for line in self.read_jsonl(ledger):
+            if is_reveal_line(line):
+                continue
+            self.assertEqual(tuple(line), SEALED_LINE_FIELDS)
+            record = open_box(line["seal_sha256"], box_for[line["seal_sha256"]], FAKE_LEDGER_KEY)
+            check_record_matches(line, record)
+            records.append(record)
+        return records

@@ -42,7 +42,7 @@ class ReforecastIntegrationTests(OfflineTestCase):
         ids = sorted(f["question"] for f in self.metaculus.forecasts())
         # 90011 is due (8 days), 90012 is not (2 days), the rest are new.
         self.assertEqual(ids, [90011, 90021, 90022])
-        reasons = {line["question_id"]: line["forecast_reason"] for line in self.read_jsonl("forecasts/ledger.jsonl")}
+        reasons = {record["question_id"]: record["forecast_reason"] for record in self.sealed_records()}
         self.assertIn("scheduled re-forecast", reasons[90011])
         self.assertEqual(reasons[90021], "first forecast")
         self.assertTrue(any("90012" not in s and "not due" in s for s in bot.skipped_not_due))

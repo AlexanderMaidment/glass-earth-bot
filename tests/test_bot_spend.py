@@ -34,7 +34,7 @@ class MeterIntegrationTests(OfflineTestCase):
         calls = [r for r in self.read_jsonl("forecasts/spend.jsonl") if r["event"] == "model_call"]
         self.assertEqual(len(calls), len(self.models.calls))
         self.assertTrue(all(r["cost_source"] == "openrouter_reported" for r in calls))
-        ledger = {line["question_id"]: line for line in self.read_jsonl("forecasts/ledger.jsonl")}
+        ledger = {record["question_id"]: record for record in self.sealed_records()}
         for question_id in (90011, 90021):
             line = ledger[question_id]
             question_calls = [r for r in calls if r["question_id"] == question_id]
@@ -43,7 +43,7 @@ class MeterIntegrationTests(OfflineTestCase):
             self.assertEqual(line["model_calls"], len(question_calls))
             self.assertEqual(line["forecaster_model"], "anthropic/claude-opus-5.5")
             self.assertEqual(line["prices_retrieved_at_utc"], spend.PRICES_RETRIEVED_AT_UTC)
-            self.assertEqual(line["ledger_version"], 2)
+            self.assertEqual(line["ledger_version"], 3)
         purposes = {r["purpose"] for r in calls}
         self.assertEqual(purposes, {"researcher", "summarizer", "forecaster", "parser"})
         # Every call carried a max_tokens limit.
@@ -54,7 +54,7 @@ class MeterIntegrationTests(OfflineTestCase):
         bot = self.make_bot(publish=True, skip=False)
         asyncio.run(bot.forecast_on_tournament("bot-testing-area", return_exceptions=True))
         comment = self.metaculus.comments()[0]["text"]
-        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        line = self.sealed_records()[0]
         self.assertIn(f"*Total Cost*: US${line['cost_usd']} over {line['model_calls']} model calls", comment)
 
     def test_unknown_costs_are_never_zero(self):
@@ -62,7 +62,7 @@ class MeterIntegrationTests(OfflineTestCase):
         self.metaculus.posts_page = _page_for("bot-testing-area", {90011})
         bot = self.make_bot(publish=True, skip=False)
         asyncio.run(bot.forecast_on_tournament("bot-testing-area", return_exceptions=True))
-        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        line = self.sealed_records()[0]
         # The web-search research call has no reported cost, so the total is Unknown,
         # and the cap counted that call at its worst case.
         self.assertEqual(line["cost_usd"], "Unknown")
@@ -161,7 +161,7 @@ class MeterIntegrationTests(OfflineTestCase):
         self.assertEqual(
             [c["model"] for c in self.models.forecast_calls], ["openrouter/anthropic/claude-opus-5.5"]
         )
-        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        line = self.sealed_records()[0]
         self.assertIn("high value", line["route"])
         self.assertIn("Fable is off (GLASS_EARTH_HIGH_VALUE_MODEL), so Opus", line["route"])
         self.assertTrue(line["combined_by"].startswith("1 forecast from anthropic/claude-opus-5.5"))
@@ -177,7 +177,7 @@ class MeterIntegrationTests(OfflineTestCase):
             [c["model"] for c in self.models.forecast_calls],
             ["openrouter/anthropic/claude-fable-5.1"] * 3,
         )
-        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        line = self.sealed_records()[0]
         self.assertEqual(line["forecaster_model"], "anthropic/claude-fable-5.1")
         self.assertIn("high value", line["route"])
         self.assertIn("the cap has room for Fable", line["route"])
@@ -192,7 +192,7 @@ class MeterIntegrationTests(OfflineTestCase):
         self.assertEqual(
             {c["model"] for c in self.models.forecast_calls}, {"openrouter/anthropic/claude-opus-5.5"}
         )
-        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        line = self.sealed_records()[0]
         self.assertIn("no room for Fable", line["route"])
 
     def test_worst_case_counts_every_forecast_in_the_ensemble(self):

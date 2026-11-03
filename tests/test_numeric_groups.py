@@ -6,6 +6,7 @@ right sub-question.
 """
 
 import asyncio
+import json
 import unittest
 from pathlib import Path
 
@@ -117,18 +118,26 @@ class NumericGroupTests(OfflineTestCase):
             self.assertIn("(sub-question: ", comment["text"])
             self.assertIn("*Final Prediction*", comment["text"])
 
-    def test_ledger_records_each_sub_question_with_its_label(self):
+    def test_ledger_seals_each_sub_question_by_its_id_without_its_label(self):
         bot = self.make_bot(publish=True)
         self.forecast_tournament(bot)
         lines = self.read_jsonl("forecasts/ledger.jsonl")
         self.assertEqual(sorted(line["question_id"] for line in lines), [90011, 90012, 90021, 90022])
-        by_id = {line["question_id"]: line for line in lines}
-        self.assertEqual(by_id[90021]["group_option"], "Revenue (synthetic)")
+        by_id = {record["question_id"]: record for record in self.sealed_records()}
         self.assertEqual(by_id[90021]["type"], "discrete")
         self.assertEqual(len(by_id[90021]["final_forecast"]["continuous_cdf"]), 19)
         self.assertEqual(by_id[90011]["forecast_reason"], "first forecast")
-        raw = Path("forecasts/ledger.jsonl").read_bytes()
-        self.assertNotIn(FAKE_TOKEN.encode(), raw)
+        # A sub-question's label and the group's title are text copied from
+        # Metaculus, so neither the public line nor the sealed record has
+        # them: the question ID says which sub-question it is.
+        raw = Path("forecasts/ledger.jsonl").read_text(encoding="utf-8")
+        records = json.dumps(list(by_id.values()))
+        self.assertNotIn("group_option", records)
+        for post in load_fixture("synthetic_group_posts.json")["results"]:
+            for text in (post["title"], *(q["label"] for q in post["group_of_questions"]["questions"])):
+                self.assertNotIn(text, raw)
+                self.assertNotIn(text, records)
+        self.assertNotIn(FAKE_TOKEN, raw)
 
     def test_a_group_fetched_by_url_skips_sub_questions_that_are_not_open(self):
         bot = self.make_bot(publish=False, skip=False)

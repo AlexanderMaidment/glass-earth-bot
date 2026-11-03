@@ -57,6 +57,7 @@ import credit
 from ledger import (
     DRY_RUN_LEDGER_PATH,
     LEDGER_PATH,
+    SEALED_BOXES_PATH,
     ForecastLedger,
     LedgerClient,
     forecast_as_json,
@@ -76,6 +77,15 @@ from routing import (
     ensemble_size_from_env,
     high_value_model_from_env,
     prize_value_usd,
+)
+from sealed_ledger import (
+    KEY_ENV,
+    LedgerKeyError,
+    append_json_line,
+    check_ledger_key,
+    ledger_key_from_env,
+    seal_entry,
+    utc_text,
 )
 from spend import (
     PRICES_RETRIEVED_AT_UTC,
@@ -277,8 +287,9 @@ class GlassEarthBot(ForecastBot):
       it for the current evidence.
     - The comment states the submitted forecast and how it was combined, and
       the bot will not publish a comment that leaves it out.
-    - Every forecast Metaculus accepts is appended to forecasts/ledger.jsonl
-      (see ledger.py), and questions already in the ledger are skipped.
+    - Every forecast Metaculus accepts is recorded in forecasts/ledger.jsonl,
+      sealed until its question closes (see ledger.py and sealed_ledger.py),
+      and questions already in the ledger are skipped.
 
     Notes from the template:
     This is the template bot for the Fall 2026 FutureEval Bot Tournament.
@@ -366,8 +377,18 @@ class GlassEarthBot(ForecastBot):
         ensemble_size: int | None = None,
         high_value_model: bool | None = None,
         question_reservation_usd: Decimal | None = None,
+        ledger_key: bytes | None = None,
         **kwargs: Any,
     ) -> None:
+        # A publishing bot seals each forecast in the public ledger until its
+        # question closes, so it needs the ledger key (unless given, from
+        # GLASS_EARTH_LEDGER_KEY); without one it stops here. A dry run
+        # writes full lines to its own ignored ledger and needs no key.
+        self._ledger_key: bytes | None = None
+        if kwargs.get("publish_reports_to_metaculus", False):
+            self._ledger_key = (
+                check_ledger_key(ledger_key) if ledger_key is not None else ledger_key_from_env()
+            )
         # Unless given, these come from the environment (routing.py and
         # spend.py), and a value the bot cannot use stops it here, before
         # anything is spent.
@@ -417,6 +438,7 @@ class GlassEarthBot(ForecastBot):
             raise ValueError(f"These models are not metered: {unmetered}")
         self.run_mode = run_mode
         self.ledger = ForecastLedger(LEDGER_PATH)
+        self.sealed_boxes_path = SEALED_BOXES_PATH
         self.dry_run_ledger = ForecastLedger(DRY_RUN_LEDGER_PATH)
         self._ledger_contexts: dict[int, dict[str, Any]] = {}
         self.skipped_not_due: list[str] = []
@@ -897,6 +919,9 @@ class GlassEarthBot(ForecastBot):
         check counts, but questions never do: a second batch started while
         this one runs against the same meter is refused before it spends.
         """
+        if self.publish_reports_to_metaculus and self._ledger_key is None:
+            # Never a full line in the public ledger: stop before any spending.
+            raise LedgerKeyError(f"Publishing needs the ledger key ({KEY_ENV}) to seal the ledger.")
         reports: list[ForecastReport | BaseException] = []
         with self.meter.one_batch_at_a_time():
             for question, reason in self._select_questions(questions):
@@ -1017,6 +1042,10 @@ class GlassEarthBot(ForecastBot):
             "group_option": question.group_question_option,
             "title": question.question_text,
             "tournaments": question.tournament_slugs,
+            # As scheduled when forecast; Metaculus can move a close.
+            "scheduled_close_time_utc": (
+                utc_text(question.close_time) if question.close_time is not None else None
+            ),
             "final_forecast_readable": report_type.make_readable_prediction(
                 aggregated_prediction
             ),
@@ -1040,16 +1069,30 @@ class GlassEarthBot(ForecastBot):
     def _record_submitted_forecast(
         self, question_id: int, final_forecast: dict[str, Any]
     ) -> None:
+        """
+        Seal the forecast Metaculus has just accepted (sealed_ledger.py): its
+        box goes in forecasts/sealed_boxes.jsonl first, so that a sealed line
+        never exists without its box, then the sealed line in the ledger.
+        """
+        if self._ledger_key is None:
+            # Never a full line in the public ledger.
+            raise LedgerKeyError(f"Publishing needs the ledger key ({KEY_ENV}) to seal the ledger.")
         context = self._ledger_contexts.get(question_id, {})
-        self.ledger.append(
+        sealed = seal_entry(
             ledger_entry(
                 question_id=question_id,
                 final_forecast=final_forecast,
                 context=context,
                 run_mode=self.run_mode,
-            )
+            ),
+            self._ledger_key,
         )
-        logger.info(f"Ledger: recorded the forecast submitted on question {question_id}")
+        append_json_line(self.sealed_boxes_path, sealed.box_line)
+        self.ledger.append(sealed.line)
+        logger.info(
+            f"Ledger: sealed the forecast submitted on question {question_id} "
+            f"(seal {sealed.line['seal_sha256'][:12]})"
+        )
 
     def _record_dry_run_forecast(self, report: ForecastReport) -> None:
         question_id = report.question.id_of_question
@@ -1713,6 +1756,7 @@ def run(
         raise SystemExit("--question-url is for dry runs only; add --dry-run")
     if args.max_questions is not None and args.max_questions < 1:
         raise SystemExit("--max-questions must be at least 1")
+    publish_to_metaculus = not args.dry_run
     # Settings from the repository variables. A value the bot cannot use stops
     # the run here, before anything is fetched or spent; it never falls back.
     try:
@@ -1720,11 +1764,14 @@ def run(
         high_value_model = high_value_model_from_env()
         cap_setting = daily_cap_setting_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
         question_reservation = question_reservation_from_env()
+        # A live run seals each forecast in the public ledger with this key
+        # (sealed_ledger.py), so without a usable one it stops here. A dry
+        # run needs none.
+        ledger_key = ledger_key_from_env() if publish_to_metaculus else None
     except ValueError as error:
         raise SystemExit(f"Stopped before forecasting: {error}") from error
 
     check_environment(strict=True)
-    publish_to_metaculus = not args.dry_run
     github_actions = os.getenv("GITHUB_ACTIONS") == "true"
     step_summary = os.getenv("GITHUB_STEP_SUMMARY")
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
@@ -1763,6 +1810,7 @@ def run(
         ensemble_size=ensemble_size,
         high_value_model=high_value_model,
         question_reservation_usd=question_reservation,
+        ledger_key=ledger_key,
         research_reports_per_question=1,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
