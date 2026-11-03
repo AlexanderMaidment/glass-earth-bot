@@ -74,7 +74,7 @@ class NumericGroupTests(OfflineTestCase):
         for label in labels:
             self.assertEqual(sum(f'only about: "{label}"' in p for p in research), 1)
 
-    def test_the_submitted_cdf_is_the_pointwise_median_of_the_members(self):
+    def test_the_submitted_cdf_is_the_pointwise_median_of_the_members_widened(self):
         from forecasting_tools import NumericDistribution, Percentile
 
         bot = self.make_bot(publish=False)
@@ -100,12 +100,17 @@ class NumericGroupTests(OfflineTestCase):
                     )
                 )
             aggregated = asyncio.run(bot._aggregate_predictions(members, question))
-            expected = np.median(
+            median = np.median(
                 np.array([[pt.percentile for pt in m.get_cdf()] for m in members]), axis=0
             )
+            # Then the numeric guardrail (guardrails.py). Both bounds are open
+            # in the fixture: 93% of the median, 5% spread evenly over the
+            # range and 1% more below it, which leaves 1% more above it.
+            location = np.linspace(0.0, 1.0, len(median))
+            expected = 0.93 * median + 0.05 * location + 0.01
             got = [pt.percentile for pt in aggregated.get_cdf()]
             self.assertEqual(len(got), question.cdf_size)
-            self.assertTrue(np.allclose(got, expected, atol=2e-3))
+            self.assertTrue(np.allclose(got, expected, rtol=0, atol=1e-9))
 
     def test_comments_go_on_the_group_post_and_state_the_sub_question(self):
         bot = self.make_bot(publish=True)

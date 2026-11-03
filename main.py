@@ -59,6 +59,9 @@ import credit
 from guardrails import (
     BINARY_MAX,
     BINARY_MIN,
+    NUMERIC_LOWER_TAIL_WEIGHT,
+    NUMERIC_UNIFORM_WEIGHT,
+    NUMERIC_UPPER_TAIL_WEIGHT,
     apply_guardrails,
     guard_binary,
     guard_option_list,
@@ -184,6 +187,19 @@ def _model_label(model: str) -> str:
 def _percent(fraction: float) -> str:
     """0.02 as "2%", 0.008333 as "0.83%", for the comment."""
     return f"{round(fraction * 100, 2):g}%"
+
+
+def _numeric_guardrail_text(open_lower: bool, open_upper: bool) -> str:
+    """The numeric guardrail (guardrails.py) in words, for the comment."""
+    text = f", with {_percent(NUMERIC_UNIFORM_WEIGHT)} of the probability spread evenly over the range"
+    tails = []
+    if open_lower:
+        tails.append(f"{_percent(NUMERIC_LOWER_TAIL_WEIGHT)} below it")
+    if open_upper:
+        tails.append(f"{_percent(NUMERIC_UPPER_TAIL_WEIGHT)} above it")
+    if tails:
+        text += " and at least " + " and ".join(tails)
+    return text
 
 
 def _member_label(model: str, member: int, ensemble_size: int) -> str:
@@ -314,6 +330,9 @@ class GlassEarthBot(ForecastBot):
       (reforecast.py); FutureEval and MiniBench questions are forecast once.
     - Each model states a base rate from a reference class first, then adjusts
       it for the current evidence.
+    - Guardrails (guardrails.py) on every submitted forecast: yes/no held
+      between 2% and 98%, every multiple choice option at least 1%, and
+      wider tails for numeric, discrete and date questions.
     - The comment states the submitted forecast and how it was combined, and
       the bot will not publish a comment that leaves it out.
     - Every forecast Metaculus accepts is recorded in forecasts/ledger.jsonl,
@@ -686,6 +705,11 @@ class GlassEarthBot(ForecastBot):
         if isinstance(question, MultipleChoiceQuestion):
             floor = multiple_choice_floor(len(question.options))
             option_guardrail = f", with every option at least {_percent(floor)}"
+        numeric_guardrail = ""
+        if isinstance(question, (NumericQuestion, DateQuestion)):
+            numeric_guardrail = _numeric_guardrail_text(
+                question.open_lower_bound, question.open_upper_bound
+            )
         if self.ensemble_size == 1:
             # One forecast: say so, rather than "the median of 1".
             source = f"1 forecast from {model}"
@@ -694,7 +718,7 @@ class GlassEarthBot(ForecastBot):
             if isinstance(question, MultipleChoiceQuestion):
                 return f"{source}, its option probabilities rescaled to sum to 100%{option_guardrail}."
             if isinstance(question, (NumericQuestion, DateQuestion)):
-                return f"{source}, submitted as its cumulative distribution."
+                return f"{source}, submitted as its cumulative distribution{numeric_guardrail}."
             return (
                 f"{source}, submitted through the forecasting-tools method for this question type, "
                 f"each yes/no part {binary_guardrail}."
@@ -708,7 +732,10 @@ class GlassEarthBot(ForecastBot):
                 f"rescaled to sum to 100%{option_guardrail}."
             )
         if isinstance(question, (NumericQuestion, DateQuestion)):
-            return f"the median of {source}, taken point by point along their cumulative distributions."
+            return (
+                f"the median of {source}, taken point by point along their "
+                f"cumulative distributions{numeric_guardrail}."
+            )
         return (
             f"the forecasting-tools method for this question type, applied to {source}, "
             f"each yes/no part {binary_guardrail}."
