@@ -1,0 +1,63 @@
+name: Learning loop
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 21 * * *" # every day at 21:00 UTC (07:00 in Brisbane)
+
+# Glass Earth: one group for every workflow that can spend on models, so runs
+# never overlap and each one sees the spending of the runs before it (the
+# daily cap in spend.py reads forecasts/spend.jsonl). A run queued behind
+# another waits; GitHub cancels an older waiting run when a newer one queues.
+concurrency:
+  group: glass-earth-model-spend
+  cancel-in-progress: false
+
+# Every morning, from resolved questions only: what resolved, how the bot's
+# forecasts scored, the three worst misses with a one-line cause, and a
+# running calibration table, in LESSONS.md (see scripts/learning_loop.py). It
+# asks Metaculus read-only questions, never forecasts or posts, and never
+# changes the bot. Its only spending is up to three short calls a morning to
+# the bot's cheap helper model, metered under the same daily cap.
+jobs:
+  learning_job:
+    # Glass Earth: off until live forecasting is approved, like the tournament
+    # workflow. It runs only while the repository variable GLASS_EARTH_LIVE is
+    # true (Settings > Secrets and variables > Actions > Variables).
+    if: vars.GLASS_EARTH_LIVE == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # lets the last step commit LESSONS.md and the records
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Run the offline tests
+        # No network, no keys, no cost. A failing test stops the run before
+        # Metaculus or any model is asked anything.
+        run: uv run --locked python -m unittest discover -s tests
+      - name: Run the learning loop
+        run: |
+          uv run --locked python scripts/learning_loop.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Glass Earth spending: the same daily cap as the forecasting
+          # workflows (default 2.00) and its high-value reserve (default 40% of
+          # the cap, at most 2.00), which the reviews leave free.
+          GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}
+          GLASS_EARTH_HIGH_VALUE_RESERVE_USD: ${{ vars.GLASS_EARTH_HIGH_VALUE_RESERVE_USD }}
+      - name: Commit the lessons, the learning state and the spend record
+        # Runs even if the loop failed, so what it reported and spent before
+        # the failure is still recorded.
+        if: always()
+        run: |
+          bash scripts/commit_and_push.sh "Lessons: learning loop run ${{ github.run_id }}" LESSONS.md forecasts/learning_state.json forecasts/spend.jsonl

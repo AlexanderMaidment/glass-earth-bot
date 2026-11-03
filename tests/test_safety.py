@@ -115,6 +115,42 @@ class WorkflowGateTests(unittest.TestCase):
         # on GitHub Actions quiet (run_log.py).
         self.assertTrue(text(REPO / "main.py").rstrip().endswith('if __name__ == "__main__":\n    sys.exit(main())'))
 
+    def test_every_workflow_given_the_model_key_shares_the_spend_queue(self):
+        # Any workflow that can call a model, now or later, is in the one
+        # queue, tests first, passes the cap and commits what it spent.
+        for path in sorted(WORKFLOWS.glob("*.yaml")):
+            body = text(path)
+            if "secrets.OPENROUTER_API_KEY" not in body:
+                continue
+            self.assertIn("group: glass-earth-model-spend", body, path.name)
+            self.assertIn("forecasts/spend.jsonl", body, path.name)
+            self.assertIn("- name: Run the offline tests", body, path.name)
+            self.assertIn("GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}", body, path.name)
+            self.assertIn(
+                "GLASS_EARTH_HIGH_VALUE_RESERVE_USD: ${{ vars.GLASS_EARTH_HIGH_VALUE_RESERVE_USD }}",
+                body,
+                path.name,
+            )
+
+    def test_learning_loop_is_gated_queued_tested_first_and_commits_its_records(self):
+        body = text(WORKFLOWS / "learning_loop.yaml")
+        self.assertIn("if: vars.GLASS_EARTH_LIVE == 'true'", body)
+        self.assertIn('- cron: "0 21 * * *"', body)
+        self.assertIn("workflow_dispatch:", body)
+        self.assertIn("group: glass-earth-model-spend", body)
+        self.assertIn("cancel-in-progress: false", body)
+        self.assertLess(
+            body.index("- name: Run the offline tests"), body.index("- name: Run the learning loop")
+        )
+        self.assertIn("python scripts/learning_loop.py", body)
+        self.assertIn("METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}", body)
+        self.assertIn("OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}", body)
+        commit = body[body.index("- name: Commit the lessons") :]
+        self.assertIn("if: always()", commit)
+        for path in ("LESSONS.md", "forecasts/learning_state.json", "forecasts/spend.jsonl"):
+            self.assertIn(path, commit)
+        self.assertIn("scripts/commit_and_push.sh", commit)
+
     def test_spend_log_merges_like_the_ledger(self):
         attributes = text(REPO / ".gitattributes")
         self.assertIn("forecasts/ledger.jsonl merge=union", attributes)
@@ -147,6 +183,9 @@ class TextTests(unittest.TestCase):
         "scripts/backup_salts.py",
         "scripts/commit_and_push.sh",
         "scripts/timestamp_ledger.py",
+        "scripts/learning_loop.py",
+        "LESSONS.md",
+        "forecasts/learning_state.json",
     ]
 
     def files(self):
