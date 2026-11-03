@@ -78,6 +78,8 @@ jobs:
       - name: Commit the forecast ledger and spend record
         # Only a run with "publish" ticked submits forecasts. Every run, a dry
         # run too, records what it spent on models in forecasts/spend.jsonl.
+        # A publishing run that failed on purpose to warn of low OpenRouter
+        # credit records the day in forecasts/credit_warnings.jsonl.
         if: always()
         run: |
-          bash scripts/commit_and_push.sh "Ledger: test-area run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl
+          bash scripts/commit_and_push.sh "Ledger: test-area run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl forecasts/credit_warnings.jsonl

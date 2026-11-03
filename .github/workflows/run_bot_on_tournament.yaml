@@ -77,7 +77,8 @@ jobs:
           GLASS_EARTH_MARKET_PULSE: ${{ vars.GLASS_EARTH_MARKET_PULSE }}
       - name: Commit the forecast ledger and spend record
         # Runs even if the bot step failed, so forecasts submitted and money
-        # spent before the failure are still recorded.
+        # spent before the failure are still recorded, and so is the day a
+        # run failed on purpose to warn of low OpenRouter credit.
         if: always()
         run: |
-          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl
+          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl forecasts/credit_warnings.jsonl

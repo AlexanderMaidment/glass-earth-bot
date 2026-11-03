@@ -74,7 +74,8 @@ jobs:
           GLASS_EARTH_HIGH_VALUE_MODEL: ${{ vars.GLASS_EARTH_HIGH_VALUE_MODEL }}
       - name: Commit the forecast ledger
         # Runs even if the bot step failed, so forecasts submitted before the
-        # failure are still recorded.
+        # failure are still recorded, and so is the day a run failed on
+        # purpose to warn of low OpenRouter credit.
         if: always()
         run: |
-          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl
+          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl forecasts/credit_warnings.jsonl

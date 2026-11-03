@@ -7,7 +7,7 @@ import statistics
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Literal, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 import dotenv
 
@@ -51,6 +51,9 @@ from forecasting_tools import (
 from forecasting_tools.data_models.forecast_report import ResearchWithPredictions
 from forecasting_tools.data_models.markdown_tree import MarkdownTree
 
+# Imported as a module: run() looks up credit.fetch_key_info when it runs, so
+# the offline tests can replace it and never reach the network.
+import credit
 from ledger import (
     DRY_RUN_LEDGER_PATH,
     LEDGER_PATH,
@@ -1695,7 +1698,15 @@ async def _forecast_target(
     return await bot.forecast_questions(questions[:max_questions], return_exceptions=True)
 
 
-def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseException]:
+def run(
+    argv: Sequence[str] | None = None,
+    *,
+    fetch_key_info: Callable[[str], dict[str, Any]] | None = None,
+) -> list[ForecastReport | BaseException]:
+    """
+    One run of the bot. fetch_key_info reads OpenRouter's report on the key
+    (default credit.fetch_key_info, a free call); the tests pass a fake.
+    """
     args = build_arg_parser().parse_args(argv)
     run_mode: Literal["tournament", "market_pulse", "metaculus_cup", "test_questions"] = args.mode
     if args.question_url and not args.dry_run:
@@ -1714,8 +1725,21 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
 
     check_environment(strict=True)
     publish_to_metaculus = not args.dry_run
+    github_actions = os.getenv("GITHUB_ACTIONS") == "true"
+    step_summary = os.getenv("GITHUB_STEP_SUMMARY")
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
     print(setup_text(ensemble_size, high_value_model))
+
+    # What is left on the OpenRouter key, from OpenRouter's free key check. A
+    # check that fails gives Unknown and the run carries on; the key's own
+    # limit is the hard stop on spending.
+    key_credit = credit.read_credit(
+        os.getenv("OPENROUTER_API_KEY"),
+        fetch_key_info if fetch_key_info is not None else credit.fetch_key_info,
+    )
+    print(key_credit.line())
+    if key_credit.low:
+        credit.warn(key_credit, github_actions=github_actions, step_summary=step_summary)
 
     log_path, read_paths = spend_log_paths()
     # The meter takes each UTC day's cap from the setting, so a run still
@@ -1810,6 +1834,18 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
     print(meter.summary_line())
     if bot.skipped_not_due:
         print(f"{len(bot.skipped_not_due)} Market Pulse question(s) were not due for a new forecast.")
+    # With all forecasting done: on GitHub, a publishing run with low credit
+    # ends with a failing exit code once per UTC day, so that GitHub emails
+    # the owner. The day goes in forecasts/credit_warnings.jsonl first.
+    failure = credit.end_of_run_failure(
+        key_credit,
+        github_actions=github_actions,
+        dry_run=not publish_to_metaculus,
+        run_mode=run_mode,
+        step_summary=step_summary,
+    )
+    if failure is not None:
+        raise SystemExit(failure)
     return forecast_reports
 
 

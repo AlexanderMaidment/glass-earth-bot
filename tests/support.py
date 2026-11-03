@@ -5,7 +5,9 @@ Shared fakes for the offline tests. Nothing here touches the network, reads
 - litellm's acompletion is replaced by SyntheticModels, which writes canned,
   SYNTHETIC answers and token counts;
 - requests.get / requests.post (the Metaculus client) are replaced by
-  FakeMetaculus, which serves SYNTHETIC fixtures and records what was posted.
+  FakeMetaculus, which serves SYNTHETIC fixtures and records what was posted;
+- credit.fetch_key_info (OpenRouter's key check) is replaced by
+  FakeOpenRouterKey, which serves a SYNTHETIC report or fails.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ for _name in (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "GITHUB_ACTIONS",
+    "GITHUB_STEP_SUMMARY",
     "GITHUB_SHA",
     "GITHUB_SERVER_URL",
     "GITHUB_REPOSITORY",
@@ -80,6 +83,7 @@ from litellm.types.utils import Choices, Message, Usage  # noqa: E402
 import forecasting_tools.ai_models.general_llm as general_llm  # noqa: E402
 from forecasting_tools import MetaculusClient  # noqa: E402
 
+import credit  # noqa: E402
 from spend import current_question  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -87,6 +91,30 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FAKE_TOKEN = "synthetic-test-token-not-real"
 
 MetaculusClient._sleep_between_requests = lambda self: None  # type: ignore[assignment]
+
+
+class FakeOpenRouterKey:
+    """
+    Replaces credit.fetch_key_info, OpenRouter's key check. It records each
+    key it is given. With no report set, it fails as an unreachable endpoint
+    would, so the run sees its credit as Unknown.
+    """
+
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+        self.report: dict[str, Any] | None = None
+
+    def __call__(self, api_key: str) -> dict[str, Any]:
+        self.keys.append(api_key)
+        if self.report is None:
+            raise ConnectionRefusedError("SYNTHETIC: the offline tests have no network")
+        return copy.deepcopy(self.report)
+
+
+# Kept for the one test that checks the real request, with urlopen replaced.
+REAL_FETCH_KEY_INFO = credit.fetch_key_info
+# No test can reach the real key check, even outside OfflineTestCase.
+credit.fetch_key_info = FakeOpenRouterKey()  # type: ignore[assignment]
 
 
 def load_fixture(name: str) -> dict[str, Any]:
@@ -288,10 +316,14 @@ class OfflineTestCase(unittest.TestCase):
         self._real_get, self._real_post = requests.get, requests.post
         requests.get = self.metaculus.get  # type: ignore[assignment]
         requests.post = self.metaculus.post  # type: ignore[assignment]
+        self.openrouter_key = FakeOpenRouterKey()
+        self._previous_fetch_key_info = credit.fetch_key_info
+        credit.fetch_key_info = self.openrouter_key  # type: ignore[assignment]
 
     def tearDown(self) -> None:
         general_llm.acompletion = self._real_acompletion  # type: ignore[assignment]
         requests.get, requests.post = self._real_get, self._real_post  # type: ignore[assignment]
+        credit.fetch_key_info = self._previous_fetch_key_info  # type: ignore[assignment]
         os.environ.pop("METACULUS_TOKEN", None)
         os.chdir(self._cwd)
         self._tmp.cleanup()

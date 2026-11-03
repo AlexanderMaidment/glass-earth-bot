@@ -119,6 +119,7 @@ class CliDryRunTests(OfflineTestCase):
             os.environ.pop(name)
         self.assertEqual(self.metaculus.gets, [])
         self.assertEqual(self.models.calls, [])
+        self.assertEqual(self.openrouter_key.keys, [])
         self.assertFalse(Path("forecasts").exists())
 
     def test_the_cap_with_an_end_date_reaches_the_spend_record(self):

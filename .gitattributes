@@ -6,6 +6,7 @@ forecasts/** -text
 # keep both sets of lines instead of stopping with a conflict.
 forecasts/ledger.jsonl merge=union
 forecasts/spend.jsonl merge=union
+forecasts/credit_warnings.jsonl merge=union
 forecasts/proofs/index.jsonl merge=union
 
 # OpenTimestamps receipts are binary files.

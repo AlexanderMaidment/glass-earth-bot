@@ -774,14 +774,7 @@ class SpendMeter:
         self._append(record)
 
     def _append(self, fields: dict[str, Any]) -> None:
-        server = os.getenv("GITHUB_SERVER_URL")
-        repository = os.getenv("GITHUB_REPOSITORY")
-        run_id = os.getenv("GITHUB_RUN_ID")
-        run_url = (
-            f"{server}/{repository}/actions/runs/{run_id}"
-            if server and repository and run_id
-            else None
-        )
+        run_url = github_run_url()
         moment = self.clock()
         record = {
             "spend_version": SPEND_VERSION,
@@ -807,6 +800,16 @@ class SpendMeter:
             f"US${money_display(self.cap)} daily cap, US${money_display(self.spent_this_run)} in this run; "
             f"{len(self.skips)} question(s) skipped by the cap."
         )
+
+
+def github_run_url() -> str | None:
+    """The page of the GitHub Actions run, when running there."""
+    server = os.getenv("GITHUB_SERVER_URL")
+    repository = os.getenv("GITHUB_REPOSITORY")
+    run_id = os.getenv("GITHUB_RUN_ID")
+    if server and repository and run_id:
+        return f"{server}/{repository}/actions/runs/{run_id}"
+    return None
 
 
 def spend_log_paths(github_actions: bool | None = None) -> tuple[Path, list[Path]]:

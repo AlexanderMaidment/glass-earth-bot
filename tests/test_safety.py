@@ -1,7 +1,8 @@
 """
 Repository-wide safety checks: the pinned litellm is not the compromised
 release, publishing stays switched off by default, every workflow that can
-spend records its spending, and Glass Earth text has no em dashes.
+spend records its spending (and any low-credit warning day), and Glass Earth
+text has no em dashes.
 """
 
 import re
@@ -59,6 +60,12 @@ class WorkflowGateTests(unittest.TestCase):
                 body,
                 name,
             )
+            # The last step runs even after a failed bot step, and commits
+            # the day a run failed on purpose to warn of low credit.
+            last_step = body[body.rindex("- name:"):]
+            self.assertIn("if: always()", last_step, name)
+            self.assertIn("bash scripts/commit_and_push.sh", last_step, name)
+            self.assertIn("forecasts/credit_warnings.jsonl", last_step, name)
             # The forecasting setup comes from repository variables too.
             self.assertIn("GLASS_EARTH_ENSEMBLE_SIZE: ${{ vars.GLASS_EARTH_ENSEMBLE_SIZE }}", body, name)
             self.assertIn("GLASS_EARTH_HIGH_VALUE_MODEL: ${{ vars.GLASS_EARTH_HIGH_VALUE_MODEL }}", body, name)
@@ -66,6 +73,7 @@ class WorkflowGateTests(unittest.TestCase):
     def test_spend_log_merges_like_the_ledger(self):
         attributes = text(REPO / ".gitattributes")
         self.assertIn("forecasts/spend.jsonl merge=union", attributes)
+        self.assertIn("forecasts/credit_warnings.jsonl merge=union", attributes)
         self.assertIn("forecasts/** -text", attributes)
 
     def test_env_and_dry_run_output_are_ignored(self):
@@ -79,6 +87,7 @@ class TextTests(unittest.TestCase):
         "main.py",
         "ledger.py",
         "spend.py",
+        "credit.py",
         "routing.py",
         "reforecast.py",
         "metered_llm.py",
