@@ -26,9 +26,9 @@ Each line is a JSON object with these fields:
 | `run_mode` | `tournament`, `market_pulse`, `metaculus_cup`, or `test_questions` for the unscored bot testing area. |
 | `final_forecast` | Exactly what Metaculus was sent: `probability_yes`, `probability_yes_per_category`, or the `continuous_cdf` (201 points for a numeric question, one more than the number of outcomes for a discrete one). |
 | `final_forecast_readable` | The same forecast as the comment on Metaculus states it. |
-| `combined_by` | How the model forecasts were combined. |
-| `model_forecasts` | Each of the three forecasts, before combining, with its model and member number. |
-| `models_without_forecast` | Forecasts (model and member number) that failed on this question. |
+| `combined_by` | How the final forecast was made: "1 forecast from ..." (the default), or how several were combined. |
+| `model_forecasts` | Each forecast before combining (one by default, `GLASS_EARTH_ENSEMBLE_SIZE` in all), with its model, and its member number when there is more than one. |
+| `models_without_forecast` | Forecasts (model, and member number when there is more than one) that failed on this question. |
 | `forecaster_model` | The model that made the forecasts (see `routing.py`). |
 | `route` | Why that model was chosen, from the question's prize value and the daily cap. |
 | `forecast_reason` | Why the question was forecast now: a first forecast, or for Market Pulse a scheduled re-forecast or the final refresh before close. |
