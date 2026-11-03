@@ -44,7 +44,7 @@ participation, and allows one entry per person, as a bot or as a human.
    the median: of the probabilities for yes/no questions, of each option's
    probability for multiple choice (rescaled to sum to 100%), and of the
    cumulative distributions, point by point, for numeric, discrete and date
-   questions.
+   questions. Then the guardrails (below) apply.
 5. **Publishing.** The forecast goes to Metaculus with a private comment
    holding all the reasoning. The comment states the submitted forecast, how
    it was made ("1 forecast from anthropic/claude-opus-5.5", or "the median of
@@ -56,6 +56,35 @@ participation, and allows one entry per person, as a bot or as a human.
    Sealed until close), and the workflow commits it.
 7. **Proof.** A daily workflow stamps the ledger with OpenTimestamps.
    `forecasts/README.md` explains the ledger fields and how to check a receipt.
+
+### Guardrails
+
+A log score has no floor: a confident forecast that turns out wrong can cost
+a great deal. So `guardrails.py` limits every forecast the bot submits, after
+its forecasts are combined:
+
+- **Yes/no:** the probability stays between 2% and 98%.
+- **Multiple choice:** every option gets at least 1%, taken from the options
+  above 1% in proportion to their probabilities. With more than 50 options,
+  the floor is 0.5 divided by the number of options.
+- **Numeric, discrete and date:** 5% of the probability is spread evenly over
+  the range, and at least 1% stays beyond each open bound. The forecast keeps
+  the rest: 93% with both bounds open, 94% with one, 95% with none.
+  forecasting-tools makes the same kind of mix with smaller weights (1% and
+  0.1%) before submitting; the guardrail takes the place of that last step.
+- **Conditional questions:** each part gets the guardrail for its type.
+
+The comment states the guardrail next to the forecast, and the ledger records
+the guarded forecast, which is exactly what Metaculus receives.
+
+The trade-off, calculated in natural logs: when a numeric forecast is right,
+its log score is about 0.06 lower than with the template's weights
+(ln(0.93 / 0.988), both bounds open), and a yes/no forecast held at 98% that
+is right loses 0.01. In return the worst cases are milder than before the
+guardrails. A numeric surprise inside the range costs at most 2.8 (the log of
+the forecast's density there against a flat forecast) instead of 3.9, and one
+beyond an open bound at most 4.5 instead of 6.2. A yes/no surprise costs at
+most 3.9 instead of 4.6, and a multiple choice one 4.6 instead of 6.9.
 
 ### Group questions
 
