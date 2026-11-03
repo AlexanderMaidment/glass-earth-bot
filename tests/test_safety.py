@@ -95,6 +95,7 @@ class TextTests(unittest.TestCase):
         "GLASS_EARTH.md",
         "forecasts/README.md",
         "scripts/go_live.py",
+        "scripts/backup_salts.py",
         "scripts/commit_and_push.sh",
         "scripts/timestamp_ledger.py",
     ]
