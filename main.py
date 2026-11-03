@@ -81,9 +81,12 @@ from routing import (
 from sealed_ledger import (
     KEY_ENV,
     LedgerKeyError,
+    PostStatuses,
     append_json_line,
     check_ledger_key,
     ledger_key_from_env,
+    metaculus_post_statuses,
+    reveal_closed_questions,
     seal_entry,
     utc_text,
 )
@@ -1732,6 +1735,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _reveal_closed_questions(
+    key: bytes,
+    post_statuses: PostStatuses,
+    *,
+    github_actions: bool,
+    step_summary: str | None,
+) -> None:
+    """
+    Reveal the sealed forecasts whose questions Metaculus now reports closed
+    or resolved (sealed_ledger.reveal_closed_questions). Whatever happens
+    here, forecasting goes ahead. A sealed line that cannot be revealed is
+    said in the log, as a GitHub Actions warning and on the run's summary page.
+    """
+    try:
+        report = reveal_closed_questions(
+            key, post_statuses, ledger_path=LEDGER_PATH, boxes_path=SEALED_BOXES_PATH
+        )
+    except Exception as error:  # revealing must never stop forecasting
+        logger.error(
+            f"Ledger reveals failed ({type(error).__name__}); nothing more is revealed "
+            "this run, and forecasting carries on."
+        )
+        return
+    print(report.line())
+    for problem in report.problems():
+        logger.warning(f"Ledger reveals: {problem}")
+        if github_actions:
+            print(f"::warning title=Sealed ledger::{credit._workflow_command_text(problem)}")
+        credit._add_to_summary(step_summary, f"**Sealed ledger.** {problem}")
+
+
 async def _forecast_target(
     bot: GlassEarthBot, target: int | str, max_questions: int | None
 ) -> list[ForecastReport | BaseException]:
@@ -1745,10 +1779,14 @@ def run(
     argv: Sequence[str] | None = None,
     *,
     fetch_key_info: Callable[[str], dict[str, Any]] | None = None,
+    post_statuses: PostStatuses | None = None,
 ) -> list[ForecastReport | BaseException]:
     """
     One run of the bot. fetch_key_info reads OpenRouter's report on the key
-    (default credit.fetch_key_info, a free call); the tests pass a fake.
+    (default credit.fetch_key_info, a free call), and post_statuses asks
+    Metaculus for the status of the questions in a post before a live run
+    reveals any (default sealed_ledger.metaculus_post_statuses, a read-only
+    GET); the tests pass fakes.
     """
     args = build_arg_parser().parse_args(argv)
     run_mode: Literal["tournament", "market_pulse", "metaculus_cup", "test_questions"] = args.mode
@@ -1821,6 +1859,17 @@ def run(
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
     )
+
+    # Before forecasting, a live run reveals the sealed forecasts whose
+    # questions Metaculus now reports closed or resolved.
+    if publish_to_metaculus:
+        assert ledger_key is not None
+        _reveal_closed_questions(
+            ledger_key,
+            post_statuses if post_statuses is not None else metaculus_post_statuses,
+            github_actions=github_actions,
+            step_summary=step_summary,
+        )
 
     # Dispatch on mode. Each branch produces a list of ForecastReport (or
     # exceptions, since return_exceptions=True) which then flows into the

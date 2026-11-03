@@ -325,6 +325,177 @@ class RevealFormatTests(unittest.TestCase):
             sl.verify_reveal(self.sealed.line, dict(self.reveal, seal_sha256="0" * 64))
 
 
+class FakeStatuses:
+    """Stands in for the Metaculus status check: SYNTHETIC statuses by post, or a failure."""
+
+    def __init__(self, statuses, fail_on=None, failure=None):
+        self.statuses = statuses
+        self.fail_on = fail_on
+        self.failure = failure
+        self.asked = []
+
+    def __call__(self, post_id):
+        self.asked.append(post_id)
+        if post_id == self.fail_on:
+            raise self.failure
+        return dict(self.statuses.get(post_id, {}))
+
+
+class RevealStepTests(unittest.TestCase):
+    """reveal_closed_questions on SYNTHETIC files, with the status check injected."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        folder = Path(self._tmp.name)
+        self.ledger, self.boxes = folder / "ledger.jsonl", folder / "sealed_boxes.jsonl"
+        self.sealed = {}
+
+    def seal(self, question_id, post_id, close, key=FAKE_LEDGER_KEY, write_box=True):
+        entry = binary_entry()
+        entry.update(question_id=question_id, post_id=post_id, scheduled_close_time_utc=close,
+                     url=f"https://www.metaculus.com/questions/{post_id}/")
+        sealed = sl.seal_entry(entry, key)
+        if write_box:
+            sl.append_json_line(self.boxes, sealed.box_line)
+        sl.append_json_line(self.ledger, sealed.line)
+        self.sealed[question_id] = sealed
+        return sealed
+
+    def reveal(self, statuses, **options):
+        return sl.reveal_closed_questions(
+            FAKE_LEDGER_KEY,
+            statuses,
+            ledger_path=self.ledger,
+            boxes_path=self.boxes,
+            now=lambda: datetime(2026, 11, 6, 0, 0, 0, tzinfo=timezone.utc),
+            **options,
+        )
+
+    def reveals(self):
+        return [line for line in sl.read_json_lines(self.ledger) if sl.is_reveal_line(line)]
+
+    def test_only_questions_metaculus_reports_closed_or_resolved_are_revealed(self):
+        for question_id, post_id in ((1, 10), (2, 20), (3, 30), (4, 40), (5, 50)):
+            self.seal(question_id, post_id, "2026-11-04T00:00:00Z")
+        statuses = FakeStatuses({10: {1: "closed"}, 20: {2: "resolved"}, 30: {3: "open"}, 40: {4: "upcoming"}})
+        report = self.reveal(statuses)
+        self.assertEqual(sorted(statuses.asked), [10, 20, 30, 40, 50])
+        self.assertEqual((report.revealed, report.still_sealed, report.not_checked), (2, 3, 0))
+        reveals = self.reveals()
+        self.assertEqual([r["record"]["question_id"] for r in reveals], [1, 2])
+        for reveal in reveals:
+            self.assertEqual(tuple(reveal), sl.REVEAL_LINE_FIELDS)
+            self.assertEqual(reveal["revealed_at_utc"], "2026-11-06T00:00:00Z")
+            line = self.sealed[reveal["record"]["question_id"]].line
+            sl.verify_reveal(line, reveal)
+            self.assertEqual(reveal["record"], self.sealed[reveal["record"]["question_id"]].record)
+        self.assertEqual(report.problems(), [])
+
+    def test_a_passed_close_time_alone_reveals_nothing(self):
+        self.seal(1, 10, "2020-01-01T00:00:00Z")
+        report = self.reveal(FakeStatuses({10: {1: "open"}}))
+        self.assertEqual((report.revealed, report.still_sealed), (0, 1))
+        self.assertEqual(self.reveals(), [])
+
+    def test_a_429_or_any_error_reveals_nothing_more_this_run(self):
+        for question_id, post_id, close in ((1, 10, "2026-11-01T00:00:00Z"), (2, 20, "2026-11-02T00:00:00Z"),
+                                            (3, 30, "2026-11-03T00:00:00Z")):
+            self.seal(question_id, post_id, close)
+        closed = {10: {1: "closed"}, 20: {2: "closed"}, 30: {3: "closed"}}
+        failures = (
+            sl.RateLimited("Metaculus answered 429, too many requests"),
+            sl.StatusCheckError("Metaculus answered HTTP 503"),
+            RuntimeError("SYNTHETIC failure text that must not be shown"),
+        )
+        for failure in failures:
+            self.ledger.write_text("", encoding="utf-8")
+            for sealed in self.sealed.values():
+                sl.append_json_line(self.ledger, sealed.line)
+            statuses = FakeStatuses(closed, fail_on=20, failure=failure)
+            report = self.reveal(statuses)
+            # Soonest close first: post 10 is revealed, post 20 fails, post 30 is never asked.
+            self.assertEqual(statuses.asked, [10, 20])
+            self.assertEqual([r["record"]["question_id"] for r in self.reveals()], [1])
+            self.assertEqual((report.revealed, report.not_checked), (1, 2))
+            self.assertIn("nothing more is revealed this run", report.line())
+            self.assertNotIn("must not be shown", report.line())
+        self.assertIn("429", self.reveal(FakeStatuses(closed, fail_on=20, failure=failures[0])).stopped_because)
+
+    def test_a_reveal_is_never_written_twice(self):
+        self.seal(1, 10, "2026-11-01T00:00:00Z")
+        self.seal(2, 20, "2026-11-02T00:00:00Z")
+        first = self.reveal(FakeStatuses({10: {1: "closed"}, 20: {2: "open"}}))
+        self.assertEqual(first.revealed, 1)
+        # A later run asks only about what is still sealed.
+        statuses = FakeStatuses({10: {1: "closed"}, 20: {2: "closed"}})
+        second = self.reveal(statuses)
+        self.assertEqual(statuses.asked, [20])
+        self.assertEqual(second.revealed, 1)
+        statuses = FakeStatuses({10: {1: "closed"}, 20: {2: "closed"}})
+        third = self.reveal(statuses)
+        self.assertEqual((statuses.asked, third.revealed), ([], 0))
+        self.assertEqual(sorted(r["record"]["question_id"] for r in self.reveals()), [1, 2])
+
+    def test_a_lost_box_is_reported_not_silent(self):
+        self.seal(1, 10, "2026-11-01T00:00:00Z")
+        self.seal(2, 20, "2026-11-02T00:00:00Z", write_box=False)
+        statuses = FakeStatuses({10: {1: "closed"}, 20: {2: "closed"}})
+        report = self.reveal(statuses)
+        self.assertEqual((report.revealed, report.lost_boxes), (1, 1))
+        # The question of a lost box is not even asked about.
+        self.assertEqual(statuses.asked, [10])
+        self.assertTrue(any("have no box" in problem for problem in report.problems()))
+        self.assertIn("1 sealed line(s) have no box in forecasts/sealed_boxes.jsonl", report.line())
+
+    def test_a_box_that_does_not_open_with_this_key_stays_sealed(self):
+        self.seal(1, 10, "2026-11-01T00:00:00Z", key=OTHER_KEY)
+        statuses = FakeStatuses({10: {1: "closed"}})
+        report = self.reveal(statuses)
+        self.assertEqual((report.revealed, report.unopened, statuses.asked), (0, 1, []))
+        self.assertTrue(report.problems())
+
+    def test_the_soonest_closes_are_asked_about_first_and_at_most_the_cap(self):
+        closes = {1: "2026-11-09T00:00:00Z", 2: "2026-11-02T00:00:00Z", 3: "2026-11-05T00:00:00Z",
+                  4: "2026-11-01T00:00:00Z", 5: "2026-12-31T00:00:00Z"}
+        for question_id, close in closes.items():
+            self.seal(question_id, question_id * 10, close)
+        statuses = FakeStatuses({})
+        report = self.reveal(statuses, max_checks=3)
+        self.assertEqual(statuses.asked, [40, 20, 30])
+        self.assertEqual((report.posts_checked, report.still_sealed, report.not_checked), (3, 3, 2))
+
+    def test_a_group_post_is_asked_about_once_and_each_sub_question_on_its_own(self):
+        self.seal(1, 10, "2026-11-01T00:00:00Z")
+        self.seal(2, 10, "2026-11-01T00:00:00Z")
+        statuses = FakeStatuses({10: {1: "closed", 2: "open"}})
+        report = self.reveal(statuses)
+        self.assertEqual(statuses.asked, [10])
+        self.assertEqual((report.revealed, report.still_sealed), (1, 1))
+        self.assertEqual([r["record"]["question_id"] for r in self.reveals()], [1])
+
+    def test_nothing_sealed_means_nothing_is_asked(self):
+        statuses = FakeStatuses({})
+        report = self.reveal(statuses)
+        self.assertEqual((statuses.asked, report.revealed), ([], 0))
+        self.assertIn("0 forecast(s) revealed", report.line())
+
+    def test_statuses_are_read_from_every_kind_of_post(self):
+        self.assertEqual(sl.statuses_in_post({"question": {"id": 1, "status": "closed"}}), {1: "closed"})
+        group = {"group_of_questions": {"questions": [{"id": 2, "status": "open"}, {"id": 3, "status": "resolved"}]}}
+        self.assertEqual(sl.statuses_in_post(group), {2: "open", 3: "resolved"})
+        conditional = {
+            "conditional": {
+                "condition": {"id": 4, "status": "resolved"},
+                "condition_child": {"id": 5, "status": "open"},
+                "question_yes": {"id": 6, "status": "closed"},
+                "question_no": {"id": 7, "status": "closed"},
+            }
+        }
+        self.assertEqual(sl.statuses_in_post(conditional), {4: "resolved", 5: "open", 6: "closed", 7: "closed"})
+        self.assertEqual(sl.statuses_in_post({"question": None, "group_of_questions": "x"}), {})
+
+
 class JsonLinesTests(unittest.TestCase):
     def test_lines_are_appended_as_ascii_with_lf_and_bad_lines_skipped(self):
         with tempfile.TemporaryDirectory() as folder:

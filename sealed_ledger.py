@@ -44,7 +44,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -106,6 +106,15 @@ RECORD_FIELDS = (
 # to Metaculus, not its readable form (which, like final_forecast_readable,
 # can spell out multiple choice options).
 MODEL_FORECAST_FIELDS = ("model", "forecast")
+# A sealed line is revealed only once Metaculus reports its question with one
+# of these statuses, never because its scheduled close time has passed:
+# Metaculus can move a close.
+REVEAL_STATUSES = frozenset({"closed", "resolved"})
+# At most this many posts are asked about in one run, those due to close
+# soonest first (by the scheduled close time in their records); the rest wait
+# for a later run. Each question is asked about once per run, in one GET for
+# its post, after the pause forecasting-tools makes between requests.
+MAX_STATUS_CHECKS_PER_RUN = 20
 
 _KEY_TEXT = re.compile(r"[A-Za-z0-9_-]+={0,2}")
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -119,6 +128,14 @@ class LedgerKeyError(ValueError):
 
 class SealError(ValueError):
     """A box that does not open, or a record or reveal that does not match its seal."""
+
+
+class StatusCheckError(RuntimeError):
+    """Metaculus could not say whether a question has closed. The message never holds the token."""
+
+
+class RateLimited(StatusCheckError):
+    """Metaculus answered 429 (too many requests)."""
 
 
 def parse_ledger_key(text: str | None) -> bytes:
@@ -360,3 +377,219 @@ def append_json_line(path: Path | str, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as file:
         file.write(json.dumps(value, ensure_ascii=True) + "\n")
+
+
+def read_boxes(path: Path | str) -> dict[str, list[str]]:
+    """Each seal_sha256 in a sealed_boxes.jsonl file, with its box (more than one if repeated)."""
+    boxes: dict[str, list[str]] = {}
+    for line in read_json_lines(path):
+        seal, box = line.get("seal_sha256"), line.get("box")
+        if isinstance(seal, str) and isinstance(box, str):
+            boxes.setdefault(seal, []).append(box)
+    return boxes
+
+
+def open_line(line: Mapping[str, Any], boxes: list[str], key: bytes) -> dict[str, Any]:
+    """The record of a sealed line, from the first of its boxes that opens and matches it."""
+    for box in boxes:
+        try:
+            record = open_box(line.get("seal_sha256"), box, key)
+            check_record_matches(line, record)
+            return record
+        except SealError:
+            continue
+    raise SealError("no box opens with this key and matches the sealed line")
+
+
+############################## REVEALS AFTER CLOSE ##############################
+
+PostStatuses = Callable[[int], Mapping[int, str]]
+
+
+def statuses_in_post(post: Mapping[str, Any]) -> dict[int, str]:
+    """The status of each question in a Metaculus post: a question, a group or a conditional."""
+    questions: list[Any] = [post.get("question")]
+    group = post.get("group_of_questions")
+    if isinstance(group, dict) and isinstance(group.get("questions"), list):
+        questions += group["questions"]
+    conditional = post.get("conditional")
+    if isinstance(conditional, dict):
+        questions += [
+            conditional.get(part)
+            for part in ("condition", "condition_child", "question_yes", "question_no")
+        ]
+    return {
+        question["id"]: question["status"]
+        for question in questions
+        if isinstance(question, dict)
+        and isinstance(question.get("id"), int)
+        and isinstance(question.get("status"), str)
+    }
+
+
+def metaculus_post_statuses(post_id: int) -> dict[int, str]:
+    """
+    The status of each question in a post: one read-only GET of Metaculus's
+    /api/posts/<id>/ with the bot's token, after forecasting-tools' pause
+    between requests, and never retried. A 429 raises RateLimited and any
+    other failure StatusCheckError. A post Metaculus does not find (404)
+    reports no status, so nothing in it is revealed.
+    """
+    import requests
+    from forecasting_tools import MetaculusClient
+
+    client = MetaculusClient()
+    if not client.token:
+        raise StatusCheckError("METACULUS_TOKEN is not set")
+    client._sleep_between_requests()
+    try:
+        response = requests.get(
+            f"{client.base_url}/posts/{int(post_id)}/",
+            headers={"Authorization": f"Token {client.token}", "Accept-Language": "en"},
+            timeout=client.timeout,
+        )
+    except requests.RequestException as error:
+        raise StatusCheckError(f"the request failed ({type(error).__name__})") from None
+    if response.status_code == 429:
+        raise RateLimited("Metaculus answered 429, too many requests")
+    if response.status_code == 404:
+        return {}
+    if response.status_code != 200:
+        raise StatusCheckError(f"Metaculus answered HTTP {response.status_code}")
+    try:
+        post = response.json()
+    except ValueError:
+        raise StatusCheckError("Metaculus's answer was not JSON") from None
+    if not isinstance(post, dict):
+        raise StatusCheckError("Metaculus's answer was not a post")
+    return statuses_in_post(post)
+
+
+@dataclass
+class RevealReport:
+    """What one run's reveal step did, for the run log. Counts are of sealed lines."""
+
+    revealed: int = 0
+    still_sealed: int = 0
+    not_checked: int = 0
+    lost_boxes: int = 0
+    unopened: int = 0
+    posts_checked: int = 0
+    stopped_because: str | None = None
+
+    def problems(self) -> list[str]:
+        found = []
+        if self.stopped_because:
+            found.append(
+                f"Stopped asking Metaculus after an error ({self.stopped_because}), "
+                "so nothing more is revealed this run."
+            )
+        if self.lost_boxes:
+            found.append(
+                f"{self.lost_boxes} sealed line(s) have no box in {BOXES_FILE}, "
+                "so they can never be revealed."
+            )
+        if self.unopened:
+            found.append(
+                f"{self.unopened} sealed line(s) have a box that does not open with this key "
+                "or does not match, so they stay sealed."
+            )
+        return found
+
+    def line(self) -> str:
+        return " ".join(
+            [
+                f"Ledger reveals: {self.revealed} forecast(s) revealed (question closed or "
+                f"resolved), {self.still_sealed} still sealed, {self.not_checked} not checked "
+                f"this run ({self.posts_checked} post(s) asked about).",
+                *self.problems(),
+            ]
+        )
+
+
+def _post_id_of(record: Mapping[str, Any]) -> int | None:
+    post_id = record.get("post_id")
+    if isinstance(post_id, int) and not isinstance(post_id, bool):
+        return post_id
+    match = re.search(r"/questions/(\d+)", str(record.get("url") or ""))
+    return int(match.group(1)) if match else None
+
+
+def reveal_closed_questions(
+    key: bytes,
+    post_statuses: PostStatuses,
+    *,
+    ledger_path: Path | str = LEDGER_FILE,
+    boxes_path: Path | str = BOXES_FILE,
+    max_checks: int = MAX_STATUS_CHECKS_PER_RUN,
+    now: Callable[[], datetime] | None = None,
+) -> RevealReport:
+    """
+    Reveal every sealed line that has no reveal yet and whose question
+    `post_statuses` (one call per post) reports closed or resolved. The boxes
+    are opened on this computer first, so only questions that can be revealed
+    are asked about. Any error or 429 from `post_statuses` stops the asking:
+    nothing more is revealed this run, and the run carries on. A sealed line
+    with no box, or whose box does not open with this key, is counted and
+    stays sealed. A reveal is never written twice.
+    """
+    key = check_ledger_key(key)
+    clock = now or (lambda: datetime.now(timezone.utc))
+    report = RevealReport()
+    lines = read_json_lines(ledger_path)
+    revealed = {line.get("seal_sha256") for line in lines if is_reveal_line(line)}
+    pending: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        if is_sealed_line(line) and line["seal_sha256"] not in revealed:
+            pending.setdefault(line["seal_sha256"], line)
+    if not pending:
+        return report
+
+    boxes = read_boxes(boxes_path)
+    by_post: dict[int, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for seal, line in pending.items():
+        if seal not in boxes:
+            report.lost_boxes += 1
+            continue
+        try:
+            record = open_line(line, boxes[seal], key)
+        except SealError:
+            report.unopened += 1
+            continue
+        post_id = _post_id_of(record)
+        if post_id is None:
+            report.not_checked += 1
+            continue
+        by_post.setdefault(post_id, []).append((line, record))
+
+    def due(post_id: int) -> tuple[str, int]:
+        closes = [
+            record.get("scheduled_close_time_utc")
+            for _, record in by_post[post_id]
+            if isinstance(record.get("scheduled_close_time_utc"), str)
+        ]
+        return (min(closes) if closes else "9999-12-31T23:59:59Z", post_id)
+
+    for post_id in sorted(by_post, key=due):
+        waiting = by_post[post_id]
+        if report.stopped_because is not None or report.posts_checked >= max_checks:
+            report.not_checked += len(waiting)
+            continue
+        report.posts_checked += 1
+        try:
+            statuses = post_statuses(post_id)
+        except StatusCheckError as error:
+            report.stopped_because = str(error)
+            report.not_checked += len(waiting)
+            continue
+        except Exception as error:  # any failure to ask stops the asking, never the run
+            report.stopped_because = f"the status check failed ({type(error).__name__})"
+            report.not_checked += len(waiting)
+            continue
+        for line, record in waiting:
+            if statuses.get(line.get("question_id")) in REVEAL_STATUSES:
+                append_json_line(ledger_path, reveal_line_for(line, record, clock()))
+                report.revealed += 1
+            else:
+                report.still_sealed += 1
+    return report

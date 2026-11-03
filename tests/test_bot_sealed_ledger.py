@@ -242,6 +242,171 @@ class LiveRunKeyTests(OfflineTestCase):
         self.assertEqual(line["scheduled_close_time_utc"], question["scheduled_close_time"])
 
 
+class RevealRunTests(OfflineTestCase):
+    """Live runs of main.run that reveal, against the fake Metaculus."""
+
+    def setUp(self):
+        super().setUp()
+        self.summary = Path(self._tmp.name) / "step_summary.md"
+        self.set_env(
+            OPENROUTER_API_KEY="sk-or-synthetic-reveal-key",
+            GLASS_EARTH_LEDGER_KEY=FAKE_LEDGER_KEY_TEXT,
+            GITHUB_STEP_SUMMARY=str(self.summary),
+        )
+        page = load_fixture("synthetic_group_posts.json")
+        for post in page["results"]:
+            post["projects"]["tournament"][0]["slug"] = "bot-testing-area"
+        self.metaculus.posts_page = page
+
+    def set_status(self, question_id, status):
+        for post in self.metaculus.posts_page["results"]:
+            for question in post["group_of_questions"]["questions"]:
+                if question["id"] == question_id:
+                    question["status"] = status
+
+    def live_run(self, **options):
+        import main
+
+        with contextlib.redirect_stdout(io.StringIO()) as console:
+            reports = main.run(["--mode", "test_questions"], **options)
+        self.assertFalse([r for r in reports if isinstance(r, BaseException)])
+        return console.getvalue()
+
+    def test_a_live_run_reveals_closed_questions_before_forecasting(self):
+        first = self.live_run()
+        self.assertIn("Ledger reveals: 0 forecast(s) revealed", first)
+        sealed_first = self.read_jsonl("forecasts/ledger.jsonl")
+        self.assertEqual(sorted(l["question_id"] for l in sealed_first), [90011, 90012, 90021, 90022])
+        gets_before = len(self.metaculus.gets)
+
+        # Metaculus now reports one sub-question closed.
+        self.set_status(90011, "closed")
+        second = self.live_run()
+        self.assertIn("Ledger reveals: 1 forecast(s) revealed", second)
+        lines = self.read_jsonl("forecasts/ledger.jsonl")
+        reveals = [l for l in lines if l.get("revealed")]
+        self.assertEqual(len(reveals), 1)
+        [line] = [l for l in sealed_first if l["question_id"] == 90011]
+        sl.verify_reveal(line, reveals[0])
+        self.assertEqual(reveals[0]["record"]["question_id"], 90011)
+        # Revealed before this run forecast anything: the reveal comes right
+        # after the first run's sealed lines, before this run's.
+        self.assertEqual(lines.index(reveals[0]), len(sealed_first))
+        self.assertEqual(sorted(l["question_id"] for l in lines[len(sealed_first) + 1:]), [90012, 90021, 90022])
+        # Asked once per post, by its own address, before this run fetched
+        # the questions to forecast.
+        urls = [url for url, _ in self.metaculus.gets[gets_before:]]
+        self.assertEqual(
+            urls[:2],
+            ["https://www.metaculus.com/api/posts/9001/", "https://www.metaculus.com/api/posts/9002/"],
+        )
+        self.assertTrue(urls[2:])
+        self.assertTrue(all(url.endswith("/api/posts/") for url in urls[2:]))
+
+    def test_a_run_reports_a_lost_box_on_github(self):
+        self.live_run()
+        boxes = Path("forecasts/sealed_boxes.jsonl")
+        kept = boxes.read_text(encoding="utf-8").splitlines()[1:]
+        boxes.write_text("".join(line + "\n" for line in kept), encoding="utf-8", newline="\n")
+        for question_id in (90011, 90012, 90021, 90022):
+            self.set_status(question_id, "closed")
+        self.set_env(GITHUB_ACTIONS="true")
+        with self.assertLogs("main", level="WARNING") as logs:
+            console = self.live_run()
+        self.assertIn("Ledger reveals: 3 forecast(s) revealed", console)
+        self.assertIn("1 sealed line(s) have no box in forecasts/sealed_boxes.jsonl", console)
+        self.assertIn("::warning title=Sealed ledger::1 sealed line(s) have no box", console)
+        self.assertTrue(any("have no box" in line for line in logs.output))
+        self.assertIn("**Sealed ledger.** 1 sealed line(s) have no box", self.summary.read_text(encoding="utf-8"))
+
+    def test_a_429_while_revealing_stops_the_reveals_not_the_run(self):
+        self.live_run()
+        for question_id in (90011, 90012):
+            self.set_status(question_id, "closed")
+        asked = []
+
+        def rate_limited(post_id):
+            asked.append(post_id)
+            raise sl.RateLimited("Metaculus answered 429, too many requests")
+
+        forecasts_before = len(self.metaculus.forecasts())
+        with self.assertLogs("main", level="WARNING"):
+            console = self.live_run(post_statuses=rate_limited)
+        self.assertEqual(len(asked), 1)
+        self.assertIn("Stopped asking Metaculus after an error (Metaculus answered 429", console)
+        self.assertFalse([l for l in self.read_jsonl("forecasts/ledger.jsonl") if l.get("revealed")])
+        # Forecasting went ahead: the two questions still open were forecast again (test area).
+        self.assertEqual(len(self.metaculus.forecasts()) - forecasts_before, 2)
+
+    def test_the_injected_check_decides_and_a_dry_run_asks_nothing(self):
+        self.live_run()
+        asked = []
+
+        def says_closed(post_id):
+            asked.append(post_id)
+            return {90021: "resolved"} if post_id == 9002 else {}
+
+        import main
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            main.run(["--mode", "test_questions", "--dry-run"], post_statuses=says_closed)
+        self.assertEqual(asked, [])
+        console = self.live_run(post_statuses=says_closed)
+        self.assertEqual(sorted(asked), [9001, 9002])
+        self.assertIn("Ledger reveals: 1 forecast(s) revealed", console)
+        [reveal] = [l for l in self.read_jsonl("forecasts/ledger.jsonl") if l.get("revealed")]
+        self.assertEqual(reveal["record"]["question_id"], 90021)
+
+
+class StatusCheckTests(OfflineTestCase):
+    """sealed_ledger.metaculus_post_statuses against the fake Metaculus."""
+
+    def test_the_check_reads_one_post_with_the_bot_token(self):
+        self.metaculus.posts_page = load_fixture("synthetic_group_posts.json")
+        self.assertEqual(sl.metaculus_post_statuses(9001), {90011: "open", 90012: "open", 90013: "closed"})
+        self.assertEqual(self.metaculus.gets[-1][0], "https://www.metaculus.com/api/posts/9001/")
+        # A post Metaculus does not find reports no status.
+        self.assertEqual(sl.metaculus_post_statuses(424242), {})
+
+    def test_a_429_or_a_failed_answer_raises_without_a_retry(self):
+        import requests
+
+        calls = []
+
+        def answering(status=200, body=b"{}", error=None):
+            def get(url, **kwargs):
+                calls.append(url)
+                if error is not None:
+                    raise error
+                response = requests.Response()
+                response.status_code = status
+                response._content = body
+                return response
+
+            return get
+
+        for get, expected in (
+            (answering(429), sl.RateLimited),
+            (answering(503), sl.StatusCheckError),
+            (answering(403), sl.StatusCheckError),
+            (answering(200, b"<html>SYNTHETIC challenge page</html>"), sl.StatusCheckError),
+            (answering(200, b"[1, 2]"), sl.StatusCheckError),
+            (answering(error=requests.ConnectionError("SYNTHETIC")), sl.StatusCheckError),
+        ):
+            calls.clear()
+            requests.get = get  # tearDown puts the fake Metaculus back
+            with self.assertRaises(expected) as caught:
+                sl.metaculus_post_statuses(9001)
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn(FAKE_TOKEN, str(caught.exception))
+
+    def test_without_a_token_nothing_is_asked(self):
+        os.environ.pop("METACULUS_TOKEN")
+        with self.assertRaises(sl.StatusCheckError):
+            sl.metaculus_post_statuses(9001)
+        self.assertEqual(self.metaculus.gets, [])
+
+
 class ReaderTests(OfflineTestCase):
     def write_ledger(self):
         """A SYNTHETIC ledger: a full line from before sealing, sealed lines, and reveals."""
