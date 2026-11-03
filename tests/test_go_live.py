@@ -75,6 +75,8 @@ class FakeRunner:
     def dry_run(self, kwargs):
         env = kwargs["env"]
         assert env["METACULUS_TOKEN"] == TOKEN and env["OPENROUTER_API_KEY"] == KEY
+        # The child must write UTF-8, or the bot's emoji banner stops it on Windows.
+        assert env["PYTHONIOENCODING"] == "utf-8" and kwargs["encoding"] == "utf-8"
         if not self.options["dry_run_ok"]:
             return done(1, "", f"SYNTHETIC failure; a careless library printed {KEY}")
         folder = self.repo / "forecasts" / "dry_run"
@@ -158,7 +160,8 @@ class GoLiveTests(unittest.TestCase):
         self.assertEqual(len(dry), 1)
         self.assertIn("--dry-run", dry[0])
         self.assertEqual(dry[0][dry[0].index("--max-questions") + 1], "1")
-        self.assertEqual(dry[0][dry[0].index("--daily-cap-usd") + 1], "1.00")
+        self.assertEqual(dry[0][dry[0].index("--daily-cap-usd") + 1], "2.00")
+        self.assertEqual(dry[0][dry[0].index("--high-value-reserve-usd") + 1], "0")
         text = self.everything_printed()
         self.assertIn("Forecast: 35.0%", text)
         self.assertIn("Cost: US$0.2834 over 11 model calls", text)

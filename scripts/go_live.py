@@ -11,7 +11,7 @@ Step 1 (run when .env is ready):
      command line.
   3. Asks OpenRouter how much credit the key has left (a free call).
   4. Runs one paid dry run on this computer: one question from the bot
-     testing area, under a US$1.00 cap, posting nothing to Metaculus.
+     testing area, under a US$2.00 cap, posting nothing to Metaculus.
   5. Prints that forecast, its comment and its cost, then stops.
 
 Step 2 (only after you have read the dry run and said yes):
@@ -43,7 +43,10 @@ REPOSITORY = "AlexanderMaidment/glass-earth-bot"
 BRANCH = "engine-one-ready"
 SECRET_NAMES = ("METACULUS_TOKEN", "OPENROUTER_API_KEY")
 PLACEHOLDERS = {"", "1234567890", "REPLACE_ME", "your-token-here", "your-api-key-here"}
-DRY_RUN_CAP_USD = "1.00"
+# One test-area question costs about US$0.27 with Opus (an assumption-based
+# estimate) and at most about US$1 (the cap check's calculated worst case), so
+# the dry run gets a US$2.00 cap and no reserve (test questions are low value).
+DRY_RUN_CAP_USD = "2.00"
 CONFIRM_WORD = "PUBLISH"
 MASK = "[hidden]"
 # Written by a good step 1, checked by step 2 (git ignores forecasts/dry_run/).
@@ -167,6 +170,8 @@ def run_dry_run(
         "1",
         "--daily-cap-usd",
         DRY_RUN_CAP_USD,
+        "--high-value-reserve-usd",
+        "0",
     ]
     if question_url:
         command += ["--question-url", question_url]
@@ -175,8 +180,19 @@ def run_dry_run(
     # The values are already in the environment; main.py need not read .env.
     env["GLASS_EARTH_SKIP_DOTENV"] = "1"
     env.pop("GITHUB_ACTIONS", None)
+    # On Windows a captured child writes in the ANSI code page, and the bot's
+    # banner (an emoji) would stop the run; make the child write UTF-8.
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     ctx.out(f"Running one paid dry run (cap US${DRY_RUN_CAP_USD}, nothing is posted): {' '.join(command[1:])}")
-    return ctx.run(command, cwd=ctx.repo, env=env, capture_output=True, text=True)
+    return ctx.run(
+        command,
+        cwd=ctx.repo,
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def show_result(
