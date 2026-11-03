@@ -128,7 +128,7 @@ def print_run_summary_banner(
         print(f"🎉  Bot {verb} {len(valid)} forecast(s).")
     elif valid and exceptions:
         print(
-            f"⚠️   Partial — {len(valid)} succeeded, {len(exceptions)} failed."
+            f"⚠️   Partial: {len(valid)} succeeded, {len(exceptions)} failed."
         )
     else:
         print(f"❌  All {len(exceptions)} attempt(s) failed.")

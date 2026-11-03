@@ -40,8 +40,17 @@ jobs:
         run: uv sync --locked
       - name: Run the offline tests
         # No network, no keys, no cost. A failing test stops the run before
-        # any model is called.
-        run: uv run --locked python -m unittest discover -s tests
+        # any model is called. The tests' own output stays in a file on the
+        # runner, which is never uploaded or committed; the log shows only the
+        # result and the names of any failing tests.
+        run: |
+          log="$RUNNER_TEMP/offline-tests.log"
+          if uv run --locked python -m unittest discover -s tests > "$log" 2>&1; then
+            grep -E '^(Ran |OK)' "$log"
+          else
+            grep -E '^(Ran |FAILED|FAIL: |ERROR: )' "$log" || true
+            exit 1
+          fi
       - name: Run bot
         run: |
           uv run python main.py --mode metaculus_cup

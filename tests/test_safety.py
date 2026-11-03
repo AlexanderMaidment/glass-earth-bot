@@ -89,6 +89,32 @@ class WorkflowGateTests(unittest.TestCase):
             last_step = body[body.rindex("- name:"):]
             self.assertIn("forecasts/ledger.jsonl forecasts/sealed_boxes.jsonl", last_step, path.name)
 
+    def test_the_bot_workflows_show_only_content_free_output(self):
+        for name in ("run_bot_on_tournament.yaml", "run_bot_on_metaculus_cup.yaml", "test_bot.yaml"):
+            body = text(WORKFLOWS / name)
+            # The offline tests' own output goes to a file on the runner; the
+            # log shows only the result and any failing test's name.
+            step = body[body.index("- name: Run the offline tests"):]
+            step = step[: step.index("- name:", 1)]
+            self.assertIn('log="$RUNNER_TEMP/offline-tests.log"', step, name)
+            self.assertIn('python -m unittest discover -s tests > "$log" 2>&1', step, name)
+            shown = [
+                line.strip()
+                for line in step.splitlines()
+                if line.strip().startswith(("grep", "cat", "tail", "head", "echo", "tee", "printf"))
+            ]
+            self.assertEqual(
+                shown,
+                ["grep -E '^(Ran |OK)' \"$log\"", "grep -E '^(Ran |FAILED|FAIL: |ERROR: )' \"$log\" || true"],
+                name,
+            )
+            # Nothing from the runner is uploaded, and the bot is run as main.py.
+            self.assertNotIn("upload-artifact", body, name)
+            self.assertIn("uv run python main.py", body, name)
+        # main.py run as a script goes through main(), which keeps a live run
+        # on GitHub Actions quiet (run_log.py).
+        self.assertTrue(text(REPO / "main.py").rstrip().endswith('if __name__ == "__main__":\n    sys.exit(main())'))
+
     def test_spend_log_merges_like_the_ledger(self):
         attributes = text(REPO / ".gitattributes")
         self.assertIn("forecasts/ledger.jsonl merge=union", attributes)
@@ -108,6 +134,8 @@ class TextTests(unittest.TestCase):
         "main.py",
         "ledger.py",
         "sealed_ledger.py",
+        "run_log.py",
+        "bot_helpers.py",
         "spend.py",
         "credit.py",
         "routing.py",
