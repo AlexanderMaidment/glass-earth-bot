@@ -53,6 +53,12 @@ class WorkflowGateTests(unittest.TestCase):
             self.assertIn(
                 "GLASS_EARTH_DAILY_CAP_UNTIL_UTC: ${{ vars.GLASS_EARTH_DAILY_CAP_UNTIL_UTC }}", body, name
             )
+            # What a question needs left of the cap to start, per Opus forecast.
+            self.assertIn(
+                "GLASS_EARTH_QUESTION_RESERVATION_USD: ${{ vars.GLASS_EARTH_QUESTION_RESERVATION_USD }}",
+                body,
+                name,
+            )
             # The forecasting setup comes from repository variables too.
             self.assertIn("GLASS_EARTH_ENSEMBLE_SIZE: ${{ vars.GLASS_EARTH_ENSEMBLE_SIZE }}", body, name)
             self.assertIn("GLASS_EARTH_HIGH_VALUE_MODEL: ${{ vars.GLASS_EARTH_HIGH_VALUE_MODEL }}", body, name)

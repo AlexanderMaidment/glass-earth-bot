@@ -90,6 +90,36 @@ class CapEnvTests(unittest.TestCase):
             self.assertIn("--high-value-reserve-usd", str(caught.exception))
 
 
+class QuestionReservationTests(unittest.TestCase):
+    def test_twice_the_measured_cost_rounded_up_to_the_cent(self):
+        # Observed: US$0.13286552 for one test-area question on 3 November 2026.
+        self.assertEqual(spend.MEASURED_QUESTION_COST_USD, Decimal("0.13286552"))
+        twice = 2 * spend.MEASURED_QUESTION_COST_USD
+        self.assertEqual(twice, Decimal("0.26573104"))
+        self.assertEqual(spend.QUESTION_RESERVATION_USD, Decimal("0.27"))
+        self.assertEqual(spend.money_text(spend.QUESTION_RESERVATION_USD), "0.27")
+        self.assertGreaterEqual(spend.QUESTION_RESERVATION_USD, twice)
+        self.assertLess(spend.QUESTION_RESERVATION_USD - twice, Decimal("0.01"))
+
+    def test_from_the_environment(self):
+        os.environ.pop(spend.QUESTION_RESERVATION_ENV, None)
+        self.assertEqual(spend.question_reservation_from_env(), Decimal("0.27"))
+        # GitHub passes an unset repository variable as an empty string.
+        self.assertEqual(spend.question_reservation_from_env(""), Decimal("0.27"))
+        self.assertEqual(spend.question_reservation_from_env(" 0.35 "), Decimal("0.35"))
+        os.environ[spend.QUESTION_RESERVATION_ENV] = "0.40"
+        try:
+            self.assertEqual(spend.question_reservation_from_env(), Decimal("0.40"))
+        finally:
+            os.environ.pop(spend.QUESTION_RESERVATION_ENV)
+
+    def test_unusable_values_stop_with_the_variable_named(self):
+        for value in ("0", "0.00", "-0.27", "abc", "NaN", "Infinity", "0,27"):
+            with self.assertRaises(ValueError, msg=repr(value)) as caught:
+                spend.question_reservation_from_env(value)
+            self.assertIn("GLASS_EARTH_QUESTION_RESERVATION_USD", str(caught.exception))
+
+
 class DatedCapTests(unittest.TestCase):
     """
     GLASS_EARTH_DAILY_CAP_UNTIL_UTC: the last UTC day the cap in

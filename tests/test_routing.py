@@ -21,10 +21,11 @@ from routing import (
 
 class RouteTests(unittest.TestCase):
     def route(self, value, spent, cap="5.00", reserve="2.00", fable=True):
+        # What each question needs to start: Opus 0.90, Fable 2.00 (SYNTHETIC).
         return choose_route(
             value_usd=Decimal(value),
-            worst_case_default_usd=Decimal("0.90"),
-            worst_case_high_value_usd=Decimal("2.00") if fable else None,
+            default_question_usd=Decimal("0.90"),
+            high_value_question_usd=Decimal("2.00") if fable else None,
             spent_today_usd=Decimal(spent),
             cap_usd=Decimal(cap),
             reserve_usd=Decimal(reserve),
@@ -43,8 +44,8 @@ class RouteTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             choose_route(
                 value_usd=Decimal("142"),
-                worst_case_default_usd=Decimal("0.90"),
-                worst_case_high_value_usd=None,
+                default_question_usd=Decimal("0.90"),
+                high_value_question_usd=None,
                 spent_today_usd=Decimal("0"),
                 cap_usd=Decimal("5"),
                 reserve_usd=Decimal("0"),
@@ -54,20 +55,25 @@ class RouteTests(unittest.TestCase):
     def test_high_value_gets_fable_while_it_fits(self):
         r = self.route("142", "0")
         self.assertEqual((r.action, r.model), ("forecast", HIGH_VALUE_FORECASTER))
+        self.assertEqual(r.reserved_usd, Decimal("2.00"))
 
     def test_high_value_falls_back_to_opus(self):
         # 5.00 - 2.20 = 2.80 left: Fable (2.00) plus a default (0.90) does not fit.
         r = self.route("142", "2.20")
         self.assertEqual((r.action, r.model), ("forecast", DEFAULT_FORECASTER))
+        self.assertEqual(r.reserved_usd, Decimal("0.90"))
 
     def test_high_value_skipped_when_even_opus_does_not_fit(self):
         r = self.route("142", "4.20")
         self.assertEqual(r.action, "skip")
-        self.assertIn("daily cap", r.reason)
+        self.assertEqual(r.reserved_usd, Decimal("0.90"))
+        self.assertIn("daily cap: US$0.8000 left; a question needs US$0.9000 to start", r.reason)
 
     def test_low_value_keeps_out_of_the_reserve(self):
         self.assertEqual(self.route("16", "2.00").model, DEFAULT_FORECASTER)
-        self.assertEqual(self.route("16", "2.20").action, "skip")
+        skipped = self.route("16", "2.20")
+        self.assertEqual(skipped.action, "skip")
+        self.assertIn("and US$2.0000 is kept for high-value questions", skipped.reason)
 
     def test_prize_values(self):
         self.assertTrue(routing.is_high_value(prize_value_usd(["fall-futureeval-2026"], 1.0)))
@@ -81,8 +87,8 @@ class RouteTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             choose_route(
                 value_usd=1.0,
-                worst_case_default_usd=Decimal("1"),
-                worst_case_high_value_usd=Decimal("1"),
+                default_question_usd=Decimal("1"),
+                high_value_question_usd=Decimal("1"),
                 spent_today_usd=Decimal("0"),
                 cap_usd=Decimal("1"),
                 reserve_usd=Decimal("0"),

@@ -67,6 +67,9 @@ jobs:
           GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}
           GLASS_EARTH_DAILY_CAP_UNTIL_UTC: ${{ vars.GLASS_EARTH_DAILY_CAP_UNTIL_UTC }}
           GLASS_EARTH_HIGH_VALUE_RESERVE_USD: ${{ vars.GLASS_EARTH_HIGH_VALUE_RESERVE_USD }}
+          # What a question needs left of the cap to start, per Opus forecast
+          # (default 0.27: twice the measured cost of one question).
+          GLASS_EARTH_QUESTION_RESERVATION_USD: ${{ vars.GLASS_EARTH_QUESTION_RESERVATION_USD }}
           # Glass Earth forecasters: forecasts per question (1 to 5, default 1)
           # and whether high-value questions go to Fable (true or false,
           # default false). A value the bot cannot use stops the run.

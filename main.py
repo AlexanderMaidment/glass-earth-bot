@@ -76,12 +76,16 @@ from routing import (
 )
 from spend import (
     PRICES_RETRIEVED_AT_UTC,
+    QUESTION_RESERVATION_ENV,
+    ZERO,
     QuestionTag,
     SpendMeter,
     current_question,
     daily_cap_setting_from_env,
     estimate_tokens,
+    money_display,
     money_text,
+    question_reservation_from_env,
     spend_log_paths,
     worst_case_call_cost,
 )
@@ -150,6 +154,15 @@ def setup_text(ensemble_size: int, high_value_model: bool) -> str:
         f"Setup: {forecasts} per question from {_model_label(DEFAULT_FORECASTER)} "
         f"({ENSEMBLE_SIZE_ENV}); {_model_label(HIGH_VALUE_FORECASTER)} for high-value "
         f"questions is {fable} ({HIGH_VALUE_MODEL_ENV})."
+    )
+
+
+def reservation_text(question_reservation_usd: Decimal, ensemble_size: int) -> str:
+    """What an Opus question needs left of the cap to start, in one line for the run log."""
+    return (
+        f"An Opus question needs US${money_text(question_reservation_usd * ensemble_size)} left "
+        f"of the cap to start: US${money_text(question_reservation_usd)} per forecast "
+        f"({QUESTION_RESERVATION_ENV}), 4 times that for a conditional question."
     )
 
 
@@ -249,8 +262,9 @@ class GlassEarthBot(ForecastBot):
       1 by default) from the model routing.py picks for it, and the median
       is submitted.
     - Every model call is metered against a hard daily cap (spend.py); a
-      question that could take the day over the cap is skipped, and each
-      question's cost goes in the ledger.
+      question is skipped when what it needs to start (its reservation, from
+      the measured cost of a real question) does not fit in what is left of
+      the cap, and each question's cost goes in the ledger.
     - Questions are forecast one at a time, so the cap check before each one
       sees everything spent so far, and a second batch that would run
       alongside one already running against the same cap is refused.
@@ -348,10 +362,12 @@ class GlassEarthBot(ForecastBot):
         spend_meter: SpendMeter | None = None,
         ensemble_size: int | None = None,
         high_value_model: bool | None = None,
+        question_reservation_usd: Decimal | None = None,
         **kwargs: Any,
     ) -> None:
-        # Unless given, both come from the environment (routing.py), and a
-        # value the bot cannot use stops it here, before anything is spent.
+        # Unless given, these come from the environment (routing.py and
+        # spend.py), and a value the bot cannot use stops it here, before
+        # anything is spent.
         self.ensemble_size = check_ensemble_size(
             ensemble_size if ensemble_size is not None else ensemble_size_from_env()
         )
@@ -360,6 +376,13 @@ class GlassEarthBot(ForecastBot):
         if not isinstance(high_value_model, bool):
             raise TypeError("high_value_model must be True or False")
         self.high_value_model = high_value_model
+        if question_reservation_usd is None:
+            question_reservation_usd = question_reservation_from_env()
+        if not isinstance(question_reservation_usd, Decimal):
+            raise TypeError("question_reservation_usd must be Decimal")
+        if not question_reservation_usd.is_finite() or question_reservation_usd <= ZERO:
+            raise ValueError("question_reservation_usd must be more than zero")
+        self.question_reservation_usd = question_reservation_usd
         # ForecastBot counts its expected predictions from these two, and the
         # cap check assumes one research report per question.
         if kwargs.setdefault("predictions_per_research_report", self.ensemble_size) != self.ensemble_size:
@@ -764,14 +787,35 @@ class GlassEarthBot(ForecastBot):
             )
         return selected
 
+    @staticmethod
+    def _forecasts_per_member(question: MetaculusQuestion) -> int:
+        # A conditional question forecasts up to 4 linked questions per member.
+        return 4 if isinstance(question, ConditionalQuestion) else 1
+
+    def _question_reservation(self, question: MetaculusQuestion) -> Decimal:
+        """
+        What an Opus question needs left of the cap to start: the reservation
+        per forecast (twice the measured cost of one real question; see
+        QUESTION_RESERVATION_USD in spend.py) times its forecasts, counted
+        like the worst case below: one per member of the ensemble, and 4 per
+        member for a conditional question.
+        """
+        return (
+            self.question_reservation_usd
+            * self.ensemble_size
+            * self._forecasts_per_member(question)
+        )
+
     def _worst_case_question_cost(
         self, question: MetaculusQuestion, forecaster_model: str
     ) -> Decimal:
         """
         The most forecasting this question could cost: every call at its
         output limit, every retry used, and one forecast (with its parsing)
-        per member of the ensemble. Calculated from MODEL_PRICES; this is what
-        the cap check before a question counts.
+        per member of the ensemble. Calculated from MODEL_PRICES. The cap
+        check before a Fable question counts it; for an Opus question the
+        check counts the reservation (_question_reservation), and this is
+        recorded for information.
         """
         question_tokens = estimate_tokens(
             self._get_research_prompt(question, self.get_llm("researcher"))
@@ -790,8 +834,7 @@ class GlassEarthBot(ForecastBot):
         summary = worst_case_call_cost(
             HELPER_MODEL, question_tokens + research_out, HELPER_MAX_TOKENS
         )
-        # A conditional question forecasts up to 4 linked questions per member.
-        forecasts_per_member = 4 if isinstance(question, ConditionalQuestion) else 1
+        forecasts_per_member = self._forecasts_per_member(question)
         members = (
             self.ensemble_size
             * forecasts_per_member
@@ -816,8 +859,8 @@ class GlassEarthBot(ForecastBot):
         self.meter.refresh_day()
         return choose_route(
             value_usd=prize_value_usd(question.tournament_slugs, question.question_weight),
-            worst_case_default_usd=self._worst_case_question_cost(question, DEFAULT_FORECASTER),
-            worst_case_high_value_usd=(
+            default_question_usd=self._question_reservation(question),
+            high_value_question_usd=(
                 self._worst_case_question_cost(question, HIGH_VALUE_FORECASTER)
                 if self.high_value_model
                 else None
@@ -835,9 +878,10 @@ class GlassEarthBot(ForecastBot):
     ) -> list[ForecastReport] | list[ForecastReport | BaseException]:
         """
         Like ForecastBot's version, but one question at a time, each after a
-        cap check, so that no question starts unless its worst case fits in
-        what is left of today's cap. A question that does not fit is skipped
-        and logged (in the run log and forecasts/spend.jsonl), not failed.
+        cap check, so that no question starts unless what it needs to start
+        (its route's reservation) fits in what is left of today's cap. A
+        question that does not fit is skipped and logged (in the run log and
+        forecasts/spend.jsonl), not failed.
 
         ForecastBot's own version starts every question at once (its
         _max_concurrent_questions limits only research calls). Here the
@@ -850,16 +894,22 @@ class GlassEarthBot(ForecastBot):
             for question, reason in self._select_questions(questions):
                 route = self._route_for(question)
                 tag = _question_tag(question)
+                # The calculated worst case with the route's model (Opus for
+                # a skip), recorded for information.
+                worst_case = self._worst_case_question_cost(
+                    question, route.model or DEFAULT_FORECASTER
+                )
                 if route.action == "skip":
                     logger.warning(
                         f"Spend cap: skipping {question.page_url}"
                         f"{' (' + question.group_question_option + ')' if question.group_question_option else ''}: {route.reason}"
                     )
-                    self.meter.record_skip(tag, route.reason, route.worst_case_usd)
+                    self.meter.record_skip(tag, route.reason, route.reserved_usd, worst_case)
                     continue
                 logger.info(
                     f"Forecasting {question.page_url} with {_model_label(route.model or '')}: "
-                    f"{route.reason}; {reason}"
+                    f"{route.reason}; {reason}. It needed US${money_display(route.reserved_usd)} "
+                    f"left of the cap to start (calculated worst case US${money_display(worst_case)})."
                 )
                 tokens = (
                     _current_route.set(route),
@@ -1649,6 +1699,7 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
         ensemble_size = ensemble_size_from_env()
         high_value_model = high_value_model_from_env()
         cap_setting = daily_cap_setting_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
+        question_reservation = question_reservation_from_env()
     except ValueError as error:
         raise SystemExit(f"Stopped before forecasting: {error}") from error
 
@@ -1668,6 +1719,7 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
         dry_run=not publish_to_metaculus,
     )
     print(cap_setting.describe(meter.day))
+    print(reservation_text(question_reservation, ensemble_size))
     print(meter.summary_line().replace(" in this run", " so far, before this run"))
 
     # Configure the bot. The models are set at the top of this file and in
@@ -1677,6 +1729,7 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
         spend_meter=meter,
         ensemble_size=ensemble_size,
         high_value_model=high_value_model,
+        question_reservation_usd=question_reservation,
         research_reports_per_question=1,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,

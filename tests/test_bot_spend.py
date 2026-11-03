@@ -80,14 +80,15 @@ class MeterIntegrationTests(OfflineTestCase):
         self.metaculus.posts_page = _page_for("bot-testing-area", {90011, 90012})
         meter = self.make_meter(cap="5.00", reserve="0")
         bot = self.make_bot(publish=True, skip=False, meter=meter, ensemble_size=3)
-        # A cap just above one question's worst case (about US$0.98 with three
-        # Opus forecasts, calculated) allows the first question, and the first
+        # A cap just above one question's reservation (US$0.81 for three Opus
+        # forecasts, calculated) allows the first question, and the first
         # question's SYNTHETIC spending (about US$0.01) leaves too little for
         # the second. test_bot_batch.py checks the same with the defaults.
         first = bot.metaculus_client.get_all_open_questions_from_tournament("bot-testing-area")[0]
-        worst = bot._worst_case_question_cost(first, main.DEFAULT_FORECASTER)
-        self.assertGreater(worst, Decimal("0.5"))
-        meter.cap = worst + Decimal("0.005")
+        reservation = bot._question_reservation(first)
+        self.assertEqual(reservation, Decimal("0.81"))
+        self.assertGreater(bot._worst_case_question_cost(first, main.DEFAULT_FORECASTER), reservation)
+        meter.cap = reservation + Decimal("0.005")
         reports = asyncio.run(bot.forecast_on_tournament("bot-testing-area", return_exceptions=True))
         self.assertEqual(len(reports), 1)
         self.assertFalse(isinstance(reports[0], BaseException))
@@ -102,17 +103,17 @@ class MeterIntegrationTests(OfflineTestCase):
     def test_cap_holds_across_runs_on_the_same_utc_day(self):
         Path("forecasts").mkdir()
         today = spend.utc_day(datetime.now(timezone.utc))
-        # US$0.40 left is less than one question's worst case (about US$0.46
-        # with one Opus forecast, calculated).
+        # US$0.20 left is less than one question's reservation (US$0.27 with
+        # one Opus forecast, calculated).
         earlier = [
-            {"utc_day": today, "event": "model_call", "cap_basis_usd": "4.60"},
+            {"utc_day": today, "event": "model_call", "cap_basis_usd": "4.80"},
             {"utc_day": "2000-01-01", "event": "model_call", "cap_basis_usd": "99"},
         ]
         Path("forecasts/spend.jsonl").write_text(
             "".join(json.dumps(r) + "\n" for r in earlier), encoding="utf-8"
         )
         meter = self.make_meter(cap="5.00", reserve="0")
-        self.assertEqual(meter.spent_today, Decimal("4.60"))
+        self.assertEqual(meter.spent_today, Decimal("4.80"))
         self.metaculus.posts_page = _page_for("bot-testing-area", {90011})
         bot = self.make_bot(publish=True, skip=False, meter=meter)
         reports = asyncio.run(bot.forecast_on_tournament("bot-testing-area", return_exceptions=True))
@@ -213,15 +214,75 @@ class MeterIntegrationTests(OfflineTestCase):
         self.assertGreater(step, Decimal("0.2"))
         self.assertEqual(worst[3] - worst[1], 2 * step)
         self.assertEqual(worst[5] - worst[1], 4 * step)
-        # A cap just under five forecasts' worst case skips the question; just
-        # over, it is forecast five times.
-        for cap, forecasts in ((worst[5] - Decimal("0.0001"), 0), (worst[5] + Decimal("0.0001"), 5)):
+        # The reservation counts every forecast too: a cap just under five
+        # forecasts' reservation (5 x US$0.27, calculated) skips the question;
+        # just over, it is forecast five times.
+        reservation = Decimal("1.35")
+        for cap, forecasts in ((reservation - Decimal("0.0001"), 0), (reservation + Decimal("0.0001"), 5)):
             self.models.forecast_calls.clear()
             meter = self.make_meter(cap=str(cap), reserve="0")
             bot = self.make_bot(publish=False, skip=False, meter=meter, ensemble_size=5)
+            self.assertEqual(bot._question_reservation(question), reservation)
             asyncio.run(bot.forecast_questions([question], return_exceptions=True))
             self.assertEqual(len(self.models.forecast_calls), forecasts, str(cap))
             self.assertEqual(len(meter.skips), 1 if forecasts == 0 else 0)
+
+    def test_the_route_counts_the_reservation_not_the_worst_case(self):
+        import main
+
+        self.metaculus.posts_page = _page_for("bot-testing-area", {90011})
+        probe = self.make_bot(publish=False, skip=False)
+        question = probe.metaculus_client.get_all_open_questions_from_tournament("bot-testing-area")[0]
+        reservation = probe._question_reservation(question)
+        worst = probe._worst_case_question_cost(question, main.DEFAULT_FORECASTER)
+        self.assertEqual(reservation, Decimal("0.27"))
+        self.assertGreater(worst, Decimal("0.40"))
+        # A cap between the two: the question starts and is forecast.
+        meter = self.make_meter(cap=str(reservation + Decimal("0.05")), reserve="0")
+        bot = self.make_bot(publish=False, skip=False, meter=meter)
+        [report] = asyncio.run(bot.forecast_questions([question], return_exceptions=True))
+        self.assertFalse(isinstance(report, BaseException))
+        self.assertEqual(len(self.models.forecast_calls), 1)
+        self.assertEqual(meter.skips, [])
+        # A cap just under the reservation: skipped, with what it needed to
+        # start and its calculated worst case both recorded.
+        Path("forecasts/spend.jsonl").unlink()
+        meter = self.make_meter(cap=str(reservation - Decimal("0.0001")), reserve="0")
+        bot = self.make_bot(publish=False, skip=False, meter=meter)
+        self.assertEqual(asyncio.run(bot.forecast_questions([question], return_exceptions=True)), [])
+        [skip] = self.read_jsonl("forecasts/spend.jsonl")
+        self.assertEqual(skip["event"], "question_skipped")
+        self.assertEqual(skip["reservation_usd"], "0.27")
+        self.assertEqual(Decimal(skip["worst_case_usd"]), worst)
+        self.assertIn("a question needs US$0.2700 to start", skip["reason"])
+
+    def test_the_reservation_scales_with_the_forecasts_a_question_takes(self):
+        from forecasting_tools import BinaryQuestion, ConditionalQuestion
+
+        def binary(n):
+            return BinaryQuestion(question_text=f"SYNTHETIC: will made-up event {n} happen?", id_of_question=n)
+
+        question = binary(1)
+        conditional = ConditionalQuestion(
+            question_text="SYNTHETIC conditional",
+            parent=binary(2),
+            child=binary(3),
+            question_yes=binary(4),
+            question_no=binary(5),
+        )
+        for size in (1, 2, 3, 5):
+            bot = self.make_bot(publish=False, skip=False, ensemble_size=size)
+            self.assertEqual(bot._question_reservation(question), Decimal("0.27") * size)
+            # A conditional question forecasts 4 linked questions per forecast.
+            self.assertEqual(bot._question_reservation(conditional), Decimal("0.27") * size * 4)
+        # The repository variable changes the amount per forecast, and the
+        # route then counts it.
+        self.set_env(GLASS_EARTH_QUESTION_RESERVATION_USD="0.35")
+        bot = self.make_bot(publish=False, skip=False, ensemble_size=3)
+        self.assertEqual(bot._question_reservation(question), Decimal("1.05"))
+        self.assertEqual(bot._route_for(question).reserved_usd, Decimal("1.05"))
+        with self.assertRaises(ValueError):
+            self.make_bot(publish=False, skip=False, question_reservation_usd=Decimal("0"))
 
 
 if __name__ == "__main__":

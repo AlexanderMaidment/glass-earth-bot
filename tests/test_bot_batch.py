@@ -187,32 +187,36 @@ class TournamentWorkflowBatchTests(OfflineTestCase):
         reports, console, logs = self.run_workflow()
         cap = Decimal("1.00")
 
-        # Each question starts only if its worst case (about US$0.46 with one
-        # Opus forecast, calculated) fits in what is left. At US$0.1162 spent
-        # per question (SYNTHETIC), questions 1 to 5 fit (0.4648 + 0.46 is
-        # under 1.00) and question 6 does not (0.5810 + 0.46 is over).
+        # Each question starts only if its reservation (US$0.27 for one Opus
+        # forecast: twice the measured cost of one real question, rounded up
+        # to the cent, calculated) fits in what is left. At US$0.1162 spent
+        # per question (SYNTHETIC), questions 1 to 7 fit (0.6972 + 0.27 is
+        # under 1.00) and question 8 does not (0.8134 + 0.27 is over).
         forecast_ids = [f["question"] for f in self.metaculus.forecasts()]
-        self.assertEqual(forecast_ids, QUESTION_IDS[:5])
-        self.assertEqual(len(reports), 5)
+        self.assertEqual(forecast_ids, QUESTION_IDS[:7])
+        self.assertEqual(len(reports), 7)
         self.assertFalse([r for r in reports if isinstance(r, BaseException)])
 
         records = self.spend_records()
         skips = [r for r in records if r["event"] == "question_skipped"]
         # Skipped in the FutureEval pass and again in the MiniBench pass.
-        self.assertEqual(sorted({s["question_id"] for s in skips}), QUESTION_IDS[5:])
+        self.assertEqual(sorted({s["question_id"] for s in skips}), QUESTION_IDS[7:])
         spent = Decimal("0")
         for record in records:
             if record["event"] == "model_call":
                 spent += Decimal(record["cap_basis_usd"])
             elif record["event"] == "question_skipped":
                 self.assertIn("daily cap", record["reason"])
-                # Skipped only because its worst case would not fit.
-                self.assertGreater(spent + Decimal(record["worst_case_usd"]), cap)
+                # Skipped only because its reservation would not fit.
+                self.assertEqual(record["reservation_usd"], "0.27")
+                self.assertGreater(spent + Decimal(record["reservation_usd"]), cap)
+                # Its calculated worst case is recorded too, for information.
+                self.assertGreater(Decimal(record["worst_case_usd"]), Decimal("0.40"))
         self.assertLessEqual(spent, cap)
         # Nothing was spent on a skipped question, and no call was refused
         # halfway through a question.
         self.assertFalse(
-            [r for r in records if r["event"] == "model_call" and r["question_id"] in QUESTION_IDS[5:]]
+            [r for r in records if r["event"] == "model_call" and r["question_id"] in QUESTION_IDS[7:]]
         )
         self.assertFalse([r for r in records if r["event"] == "call_refused"])
         # Each skip is logged with its reason, and counted in the summary.
@@ -235,9 +239,10 @@ class TournamentWorkflowBatchTests(OfflineTestCase):
         self.assertEqual(sorted(f["question"] for f in self.metaculus.forecasts()), QUESTION_IDS)
 
         # Fable needs room for its worst case (about US$2.06 for three
-        # forecasts) plus a default question's (about US$0.98), calculated.
-        # At US$0.6118 per Fable question (SYNTHETIC), questions 1 to 4 get
-        # Fable; questions 5 to 10 fall back to Opus.
+        # forecasts, calculated) plus a default question's reservation
+        # (US$0.81 for three Opus forecasts, calculated). At US$0.6118 per
+        # Fable question (SYNTHETIC), questions 1 to 4 get Fable (1.8354 +
+        # 2.06 + 0.81 is under 5.00); questions 5 to 10 fall back to Opus.
         ledger = sorted(self.read_jsonl("forecasts/ledger.jsonl"), key=lambda line: line["question_id"])
         models = [line["forecaster_model"] for line in ledger]
         self.assertEqual(

@@ -6,10 +6,13 @@ question is forecast at all.
 - Claude Fable 5.1 forecasts high-value questions only when that is switched
   on (GLASS_EARTH_HIGH_VALUE_MODEL=true), and then only while the daily cap
   still has room for a Fable question at its worst case plus one more default
-  question after it.
-- A low-value question is skipped rather than spend into the reserve that is
+  question's reservation after it.
+- A low-value question is skipped rather than start in the reserve that is
   kept for high-value questions.
-- A question that could take the day over the cap even with Opus is skipped.
+- A question is skipped when what it needs to start does not fit in what is
+  left of the cap. For Opus that is its reservation, from the measured cost
+  of a real question (QUESTION_RESERVATION_USD in spend.py); for Fable, its
+  calculated worst case.
 
 High value means a prize value per question of at least
 HIGH_VALUE_THRESHOLD_USD: the tournament's prize pool divided by its planned
@@ -128,78 +131,77 @@ class Route:
     action: Literal["forecast", "skip"]
     tier: Literal["high_value", "default"] | None
     model: str | None
-    worst_case_usd: Decimal
+    # What the question needs left of the cap to start with the chosen model
+    # (for a skip, what an Opus question needed).
+    reserved_usd: Decimal
     reason: str
 
 
 def choose_route(
     *,
     value_usd: Decimal,
-    worst_case_default_usd: Decimal,
-    worst_case_high_value_usd: Decimal | None,
+    default_question_usd: Decimal,
+    high_value_question_usd: Decimal | None,
     spent_today_usd: Decimal,
     cap_usd: Decimal,
     reserve_usd: Decimal,
     use_high_value_model: bool,
 ) -> Route:
     """
-    Pick the model for one question from what is left of today's cap. With
-    use_high_value_model off, high-value questions go to Opus, and
-    worst_case_high_value_usd may be None.
+    Pick the model for one question from what is left of today's cap.
+    default_question_usd and high_value_question_usd are what the question
+    needs left of the cap to start with Opus and with Fable: main.py passes
+    Opus's reservation (from measured cost) and Fable's calculated worst
+    case. With use_high_value_model off, high-value questions go to Opus,
+    and high_value_question_usd may be None.
     """
-    amounts = [value_usd, worst_case_default_usd, spent_today_usd, cap_usd, reserve_usd]
-    if worst_case_high_value_usd is not None:
-        amounts.append(worst_case_high_value_usd)
+    amounts = [value_usd, default_question_usd, spent_today_usd, cap_usd, reserve_usd]
+    if high_value_question_usd is not None:
+        amounts.append(high_value_question_usd)
     for amount in amounts:
         if not isinstance(amount, Decimal):
             raise TypeError("Money must be Decimal")
-    if use_high_value_model and worst_case_high_value_usd is None:
+    if use_high_value_model and high_value_question_usd is None:
         raise ValueError("Routing to Fable needs Fable's worst case for the question")
     left = cap_usd - spent_today_usd
     high = is_high_value(value_usd)
     value_text = f"prize value US${money_display(value_usd)} per question"
+    needs_text = (
+        f"daily cap: US${money_display(left)} left; a question needs "
+        f"US${money_display(default_question_usd)} to start"
+    )
     if high:
         if use_high_value_model:
-            assert worst_case_high_value_usd is not None
-            if worst_case_high_value_usd + worst_case_default_usd <= left:
+            assert high_value_question_usd is not None
+            if high_value_question_usd + default_question_usd <= left:
                 return Route(
                     "forecast",
                     "high_value",
                     HIGH_VALUE_FORECASTER,
-                    worst_case_high_value_usd,
+                    high_value_question_usd,
                     f"high value ({value_text}); the cap has room for Fable",
                 )
             fallback = f"high value ({value_text}), but the cap has no room for Fable, so Opus"
         else:
             fallback = f"high value ({value_text}); Fable is off ({HIGH_VALUE_MODEL_ENV}), so Opus"
-        if worst_case_default_usd <= left:
+        if default_question_usd <= left:
             return Route(
                 "forecast",
                 "default",
                 DEFAULT_FORECASTER,
-                worst_case_default_usd,
+                default_question_usd,
                 fallback,
             )
-        return Route(
-            "skip",
-            None,
-            None,
-            worst_case_default_usd,
-            f"daily cap: US${money_display(left)} left, a question can cost up to "
-            f"US${money_display(worst_case_default_usd)}",
-        )
-    if worst_case_default_usd + reserve_usd <= left:
+        return Route("skip", None, None, default_question_usd, needs_text)
+    if default_question_usd + reserve_usd <= left:
         return Route(
             "forecast",
             "default",
             DEFAULT_FORECASTER,
-            worst_case_default_usd,
+            default_question_usd,
             f"default ({value_text})",
         )
-    reason = (
-        f"daily cap: US${money_display(left)} left, a question can cost up to "
-        f"US${money_display(worst_case_default_usd)}"
-    )
+    reason = needs_text
     if reserve_usd > ZERO:
         reason += f", and US${money_display(reserve_usd)} is kept for high-value questions"
-    return Route("skip", None, None, worst_case_default_usd, reason)
+    return Route("skip", None, None, default_question_usd, reason)

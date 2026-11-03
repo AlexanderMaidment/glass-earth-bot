@@ -90,6 +90,12 @@ class CliDryRunTests(OfflineTestCase):
             "anthropic/claude-fable-5.1 for high-value questions is off (GLASS_EARTH_HIGH_VALUE_MODEL).",
             console.getvalue(),
         )
+        self.assertIn(
+            "An Opus question needs US$0.27 left of the cap to start: US$0.27 per forecast "
+            "(GLASS_EARTH_QUESTION_RESERVATION_USD), 4 times that for a conditional question.",
+            console.getvalue(),
+        )
+        self.assertIn("Daily cap: US$2.0000 a UTC day; US$0.8000 of it is kept", console.getvalue())
 
     def test_unusable_settings_stop_the_run_before_anything_is_fetched_or_spent(self):
         import main
@@ -101,6 +107,8 @@ class CliDryRunTests(OfflineTestCase):
             ("GLASS_EARTH_DAILY_CAP_USD", "four"),
             ("GLASS_EARTH_DAILY_CAP_UNTIL_UTC", "8 November"),
             ("GLASS_EARTH_DAILY_CAP_UNTIL_UTC", "2026-11-31"),
+            ("GLASS_EARTH_QUESTION_RESERVATION_USD", "0"),
+            ("GLASS_EARTH_QUESTION_RESERVATION_USD", "a quarter"),
         ):
             self.set_env(**{name: value})
             with contextlib.redirect_stdout(io.StringIO()):

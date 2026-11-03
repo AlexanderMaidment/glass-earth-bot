@@ -32,7 +32,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
@@ -60,6 +60,21 @@ CAP_ENV = "GLASS_EARTH_DAILY_CAP_USD"
 # the cap is DEFAULT_DAILY_CAP_USD again. Unset means no end date.
 CAP_UNTIL_ENV = "GLASS_EARTH_DAILY_CAP_UNTIL_UTC"
 RESERVE_ENV = "GLASS_EARTH_HIGH_VALUE_RESERVE_USD"
+QUESTION_RESERVATION_ENV = "GLASS_EARTH_QUESTION_RESERVATION_USD"
+
+# The measured cost of one real question (observed): OpenRouter reported
+# US$0.13286552 used on the bot's key after the 3 November 2026 dry run of one
+# bot-testing-area question (question 46451, one Opus forecast). The bot's own
+# record of that run's five calls (forecasts/dry_run/ledger.jsonl, kept on the
+# computer that ran it) gives the same total: research US$0.0875395, summary
+# US$0.0002966, forecast US$0.044644, two parsing calls US$0.00038542.
+MEASURED_QUESTION_COST_USD = Decimal("0.13286552")
+# What a question with one Opus forecast needs left of the cap before it
+# starts: twice the measured cost, rounded up to the cent (calculated:
+# US$0.27). main.py multiplies it by the forecasts a question takes.
+QUESTION_RESERVATION_USD = (2 * MEASURED_QUESTION_COST_USD).quantize(
+    Decimal("0.01"), rounding=ROUND_CEILING
+)
 
 # A conservative token estimate for text the bot sends: about 4 characters
 # make a token in English, so counting 3 overestimates.
@@ -435,6 +450,25 @@ def daily_cap_from_env(
     return setting.for_day(today if today is not None else utc_day(_now()))
 
 
+def question_reservation_from_env(override: str | None = None) -> Decimal:
+    """
+    What one Opus forecast of a question needs left of the cap before the
+    question starts: GLASS_EARTH_QUESTION_RESERVATION_USD, or
+    QUESTION_RESERVATION_USD (twice the measured cost of one question).
+    """
+    raw = override if override is not None else os.getenv(QUESTION_RESERVATION_ENV)
+    # GitHub passes an unset repository variable as an empty string.
+    if raw is None or raw.strip() == "":
+        return QUESTION_RESERVATION_USD
+    amount = amount_setting(raw, QUESTION_RESERVATION_ENV)
+    if amount <= ZERO:
+        raise ValueError(
+            f"{QUESTION_RESERVATION_ENV} must be more than zero, but it is {raw!r}. Leave it "
+            f"unset for US${money_text(QUESTION_RESERVATION_USD)}, twice the measured cost of one question."
+        )
+    return amount
+
+
 @dataclass
 class Reservation:
     amount: Decimal
@@ -657,13 +691,18 @@ class SpendMeter:
             }
         )
 
-    def record_skip(self, tag: QuestionTag, reason: str, worst_case: Decimal) -> None:
+    def record_skip(
+        self, tag: QuestionTag, reason: str, reservation: Decimal, worst_case: Decimal
+    ) -> None:
         record = {
             "event": "question_skipped",
             "question_id": tag.question_id,
             "post_id": tag.post_id,
             "url": tag.url,
             "reason": reason,
+            # What the question needed left of the cap to start, which did not fit.
+            "reservation_usd": money_text(reservation),
+            # Its calculated worst case, for information.
             "worst_case_usd": money_text(worst_case),
             "cap_basis_usd": "0",
         }

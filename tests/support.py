@@ -43,6 +43,7 @@ for _name in (
     "GLASS_EARTH_DAILY_CAP_USD",
     "GLASS_EARTH_DAILY_CAP_UNTIL_UTC",
     "GLASS_EARTH_HIGH_VALUE_RESERVE_USD",
+    "GLASS_EARTH_QUESTION_RESERVATION_USD",
     "GLASS_EARTH_MARKET_PULSE",
     "GLASS_EARTH_ENSEMBLE_SIZE",
     "GLASS_EARTH_HIGH_VALUE_MODEL",
@@ -317,8 +318,9 @@ class OfflineTestCase(unittest.TestCase):
         run_mode: str = "offline-test",
         ensemble_size: int | None = None,
         high_value_model: bool | None = None,
+        question_reservation_usd: Decimal | None = None,
     ):
-        """A bot as main.run builds it. The two settings default to the environment."""
+        """A bot as main.run builds it. The settings default to the environment."""
         import main
 
         return main.GlassEarthBot(
@@ -326,6 +328,7 @@ class OfflineTestCase(unittest.TestCase):
             spend_meter=meter or self.make_meter(run_mode=run_mode, dry_run=not publish),
             ensemble_size=ensemble_size,
             high_value_model=high_value_model,
+            question_reservation_usd=question_reservation_usd,
             research_reports_per_question=1,
             publish_reports_to_metaculus=publish,
             skip_previously_forecasted_questions=skip,
