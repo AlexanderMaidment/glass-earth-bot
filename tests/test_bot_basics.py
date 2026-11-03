@@ -75,7 +75,8 @@ class DefaultSetupTests(OfflineTestCase):
         rule = bot._combination_rule(multiple_choice())
         self.assertEqual(
             rule,
-            "1 forecast from anthropic/claude-opus-5.5, its option probabilities rescaled to sum to 100%.",
+            "1 forecast from anthropic/claude-opus-5.5, its option probabilities rescaled to sum to 100%, "
+            "with every option at least 1%.",
         )
         bot3 = self.make_bot(publish=False, skip=False, ensemble_size=3)
         self.assertEqual(

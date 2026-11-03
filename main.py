@@ -56,7 +56,14 @@ from forecasting_tools.data_models.markdown_tree import MarkdownTree
 # Imported as a module: run() looks up credit.fetch_key_info when it runs, so
 # the offline tests can replace it and never reach the network.
 import credit
-from guardrails import BINARY_MAX, BINARY_MIN, apply_guardrails, guard_binary
+from guardrails import (
+    BINARY_MAX,
+    BINARY_MIN,
+    apply_guardrails,
+    guard_binary,
+    guard_option_list,
+    multiple_choice_floor,
+)
 from ledger import (
     DRY_RUN_LEDGER_PATH,
     LEDGER_PATH,
@@ -249,9 +256,11 @@ def _last_forecast_on_metaculus(question: MetaculusQuestion) -> datetime | None:
 def _median_of_option_lists(
     predictions: list[PredictedOptionList],
 ) -> PredictedOptionList:
-    """Each option's median across the forecasts, rescaled to sum to 1."""
-    from forecasting_tools import PredictedOption
-
+    """
+    Each option's median across the forecasts, rescaled to sum to 1, with
+    the multiple choice guardrail (guardrails.py) applied before the option
+    list is built.
+    """
     names = [option.option_name for option in predictions[0].predicted_options]
     for prediction in predictions:
         if {option.option_name for option in prediction.predicted_options} != set(names):
@@ -265,15 +274,9 @@ def _median_of_option_lists(
             if option.option_name == name
         ]
         medians.append(statistics.median(values))
-    total = sum(medians)
-    if total <= 0:
+    if sum(medians) <= 0:
         raise ValueError("The option medians sum to zero")
-    return PredictedOptionList(
-        predicted_options=[
-            PredictedOption(option_name=name, probability=value / total)
-            for name, value in zip(names, medians)
-        ]
-    )
+    return guard_option_list(names, medians)
 
 
 def _split_model_line(reasoning: str) -> tuple[str, str]:
@@ -679,13 +682,17 @@ class GlassEarthBot(ForecastBot):
     def _combination_rule(self, question: MetaculusQuestion) -> str:
         model = _model_label(self._forecaster_llm().model)
         binary_guardrail = f"held between {_percent(BINARY_MIN)} and {_percent(BINARY_MAX)}"
+        option_guardrail = ""
+        if isinstance(question, MultipleChoiceQuestion):
+            floor = multiple_choice_floor(len(question.options))
+            option_guardrail = f", with every option at least {_percent(floor)}"
         if self.ensemble_size == 1:
             # One forecast: say so, rather than "the median of 1".
             source = f"1 forecast from {model}"
             if isinstance(question, BinaryQuestion):
                 return f"{source}, {binary_guardrail}."
             if isinstance(question, MultipleChoiceQuestion):
-                return f"{source}, its option probabilities rescaled to sum to 100%."
+                return f"{source}, its option probabilities rescaled to sum to 100%{option_guardrail}."
             if isinstance(question, (NumericQuestion, DateQuestion)):
                 return f"{source}, submitted as its cumulative distribution."
             return (
@@ -696,7 +703,10 @@ class GlassEarthBot(ForecastBot):
         if isinstance(question, BinaryQuestion):
             return f"the median of {source}, each {binary_guardrail}."
         if isinstance(question, MultipleChoiceQuestion):
-            return f"the median of each option's probability across {source}, rescaled to sum to 100%."
+            return (
+                f"the median of each option's probability across {source}, "
+                f"rescaled to sum to 100%{option_guardrail}."
+            )
         if isinstance(question, (NumericQuestion, DateQuestion)):
             return f"the median of {source}, taken point by point along their cumulative distributions."
         return (

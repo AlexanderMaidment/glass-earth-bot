@@ -11,6 +11,9 @@ from forecasting_tools import (
     BinaryQuestion,
     ConditionalPrediction,
     ConditionalQuestion,
+    MultipleChoiceQuestion,
+    PredictedOption,
+    PredictedOptionList,
     PredictionAffirmed,
 )
 
@@ -49,6 +52,23 @@ def conditional():
         page_url="https://www.metaculus.com/questions/310/",
         **parts,
         **COMMON,
+    )
+
+
+def multiple_choice(options=("Red", "Green", "Blue"), post_id=302, question_id=3002):
+    return MultipleChoiceQuestion(
+        question_text="Which SYNTHETIC option wins?",
+        id_of_post=post_id,
+        id_of_question=question_id,
+        page_url=f"https://www.metaculus.com/questions/{post_id}/",
+        options=list(options),
+        **COMMON,
+    )
+
+
+def option_list(names, values):
+    return PredictedOptionList(
+        predicted_options=[PredictedOption(option_name=n, probability=v) for n, v in zip(names, values)]
     )
 
 
@@ -162,6 +182,141 @@ class BinaryGuardrailInTheBotTests(OfflineTestCase):
         self.assertIn("each yes/no part held between 2% and 98%", report.explanation)
         recorded = {line["question_id"]: line["final_forecast"] for line in self.read_jsonl("forecasts/ledger.jsonl")}
         self.assertEqual(recorded, {3013: {"probability_yes": 0.02}, 3014: {"probability_yes": 0.98}})
+
+
+class MultipleChoiceGuardrailTests(unittest.TestCase):
+    def assert_floored(self, values, floor):
+        self.assertAlmostEqual(sum(values), 1.0, places=12)
+        self.assertTrue(all(v >= floor for v in values), (floor, min(values)))
+
+    def assert_check_changes_nothing(self, names, values):
+        """forecasting-tools' PredictedOptionList check raises nothing and moves nothing."""
+        checked = [o.probability for o in option_list(names, values).predicted_options]
+        self.assertEqual(len(checked), len(values))
+        for before, after in zip(values, checked):
+            self.assertAlmostEqual(before, after, places=12)
+
+    def test_the_floor_is_1_percent_up_to_50_options_then_half_divided_by_the_count(self):
+        from guardrails import multiple_choice_floor
+
+        self.assertEqual(multiple_choice_floor(2), 0.01)
+        self.assertEqual(multiple_choice_floor(50), 0.01)
+        self.assertEqual(multiple_choice_floor(51), 0.5 / 51)
+        self.assertEqual(multiple_choice_floor(100), 0.005)
+        # Never below forecasting-tools' own 0.1% minimum.
+        self.assertEqual(multiple_choice_floor(600), 0.001)
+
+    def test_zeros_get_the_floor_taken_in_proportion_from_the_others(self):
+        from guardrails import floor_option_probabilities
+
+        got = floor_option_probabilities([0.7, 0.3, 0.0, 0.0])
+        self.assert_floored(got, 0.01)
+        self.assertEqual(got[2:], [0.01, 0.01])
+        # The two options above the floor give up 2% between them, 7 to 3.
+        self.assertAlmostEqual(got[0], 0.7 * 0.98, places=12)
+        self.assertAlmostEqual(got[1], 0.3 * 0.98, places=12)
+
+    def test_an_option_the_rescaling_pushes_below_the_floor_is_raised_too(self):
+        from guardrails import floor_option_probabilities
+
+        # SYNTHETIC: 0.0101 would fall to 0.0098 when the three zeros are raised.
+        got = floor_option_probabilities([0.96, 0.0101, 0.0, 0.0, 0.0, 0.0299])
+        self.assert_floored(got, 0.01)
+        self.assertEqual(got[1:5], [0.01] * 4)
+        self.assertAlmostEqual(got[0] / got[5], 0.96 / 0.0299, places=9)
+
+    def test_already_floored_values_are_kept(self):
+        from guardrails import floor_option_probabilities
+
+        for values in ([0.5, 0.3, 0.2], [0.98, 0.01, 0.01]):
+            got = floor_option_probabilities(values)
+            for before, after in zip(values, got):
+                self.assertAlmostEqual(before, after, places=12)
+
+    def test_twenty_options_with_fifteen_zeros_pass_the_template_check_unchanged(self):
+        from guardrails import guard_option_list
+
+        names = [f"Option {i}" for i in range(20)]
+        raw = [0.96, 0.01, 0.01, 0.01, 0.01] + [0.0] * 15
+        guarded = guard_option_list(names, raw)
+        values = [o.probability for o in guarded.predicted_options]
+        self.assertEqual([o.option_name for o in guarded.predicted_options], names)
+        self.assert_floored(values, 0.01)
+        # 19 options at the floor and the rest on the first one.
+        self.assertAlmostEqual(values[0], 0.81, places=12)
+        # Far more than the template check's 0.05 limit on a change, which is
+        # why the floor is applied before the list is built.
+        self.assertGreater(raw[0] - values[0], 0.05)
+        self.assert_check_changes_nothing(names, values)
+
+    def test_more_than_50_options(self):
+        from guardrails import guard_option_list
+
+        for count in (51, 60, 120, 400):
+            names = [f"Option {i}" for i in range(count)]
+            raw = [0.5, 0.3, 0.2] + [0.0] * (count - 3)
+            values = [o.probability for o in guard_option_list(names, raw).predicted_options]
+            self.assert_floored(values, 0.5 / count)
+            # The zeros take half of the probability at most.
+            self.assertGreaterEqual(sum(values[:3]), 0.5 - 1e-12)
+            self.assert_check_changes_nothing(names, values)
+
+    def test_option_lists_that_cannot_be_guarded_are_refused(self):
+        from guardrails import floor_option_probabilities, guard_option_list
+
+        for values in ([0.5, -0.1, 0.6], [0.0, 0.0], [0.5, math.nan], [], [0.001] * 1000):
+            with self.assertRaises(ValueError, msg=repr(values[:3])):
+                floor_option_probabilities(values)
+        with self.assertRaises(ValueError):
+            guard_option_list(["A", "B"], [1.0])
+
+    def test_conditional_option_lists_are_guarded(self):
+        from guardrails import apply_guardrails
+
+        guarded = apply_guardrails(
+            ConditionalPrediction(
+                parent=PredictionAffirmed(),
+                child=PredictionAffirmed(),
+                prediction_yes=option_list("ABC", [0.998, 0.001, 0.001]),
+                prediction_no=0.5,
+            )
+        )
+        values = [o.probability for o in guarded.prediction_yes.predicted_options]
+        self.assert_floored(values, 0.01)
+        self.assertAlmostEqual(values[0], 0.98, places=12)
+
+
+class MultipleChoiceGuardrailInTheBotTests(OfflineTestCase):
+    def test_every_option_is_submitted_stated_and_recorded_at_1_percent_or_more(self):
+        lines = {0: "Red: 100%\nGreen: 0%\nBlue: 0%", 1: "Red: 99%\nGreen: 1%\nBlue: 0%"}
+        self.models.forecast_answer = lambda model, prompt, n: (
+            "Reference class and base rate: SYNTHETIC.\n" + lines[n % 2]
+        )
+        bot = self.make_bot(publish=True, skip=False, ensemble_size=3)
+        [report] = asyncio.run(bot.forecast_questions([multiple_choice()], return_exceptions=True))
+        got = {o.option_name: o.probability for o in report.prediction.predicted_options}
+        self.assertAlmostEqual(sum(got.values()), 1.0, places=12)
+        self.assertEqual((got["Green"], got["Blue"]), (0.01, 0.01))
+        self.assertAlmostEqual(got["Red"], 0.98, places=12)
+        self.assertIn("- Green: 1.0%", report.explanation)
+        self.assertIn(
+            "rescaled to sum to 100%, with every option at least 1%.", report.explanation
+        )
+        [sent] = self.metaculus.forecasts()
+        self.assertEqual(sent["probability_yes_per_category"], got)
+        [line] = self.read_jsonl("forecasts/ledger.jsonl")
+        self.assertEqual(line["final_forecast"]["probability_yes_per_category"], got)
+
+    def test_sixty_options_with_zero_medians_are_floored_without_an_error(self):
+        names = [f"Option {i}" for i in range(60)]
+        q = multiple_choice(options=names)
+        members = [option_list(names, [0.6, 0.4] + [0.0] * 58)] * 3
+        bot = self.make_bot(publish=False, skip=False, ensemble_size=3)
+        guarded = asyncio.run(bot._aggregate_predictions(members, q))
+        values = [o.probability for o in guarded.predicted_options]
+        self.assertAlmostEqual(sum(values), 1.0, places=12)
+        self.assertTrue(all(v >= 0.5 / 60 for v in values))
+        self.assertIn("with every option at least 0.83%", bot._combination_rule(q))
 
 
 if __name__ == "__main__":
