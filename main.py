@@ -683,19 +683,20 @@ class GlassEarthBot(ForecastBot):
     ) -> PredictionTypes:
         if isinstance(question, MultipleChoiceQuestion):
             # The template averages; Glass Earth takes the median, like the
-            # other question types.
-            return _median_of_option_lists(predictions)  # type: ignore[arg-type]
-        # Binary: the median (forecasting-tools). Numeric, discrete and date:
-        # the median of the cumulative distributions, point by point.
-        aggregated = await super()._aggregate_predictions(predictions, question)
+            # other question types (already floored, see the function).
+            aggregated = _median_of_option_lists(predictions)  # type: ignore[arg-type]
+        else:
+            # Binary: the median (forecasting-tools). Numeric, discrete and
+            # date: the median of the cumulative distributions, point by point.
+            aggregated = await super()._aggregate_predictions(predictions, question)
         if isinstance(question, BinaryQuestion):
             # The comment shows the final probability to two decimal places of a
             # percent. Rounding to match means the comment states exactly the
             # value that is submitted.
             aggregated = round(aggregated, 4)
-        # The guardrails (guardrails.py) on the combined forecast, the parts of
-        # a conditional one included. What this returns is what the comment
-        # states, the ledger records and Metaculus is sent.
+        # The guardrails (guardrails.py) on the combined forecast of every
+        # type, the parts of a conditional one included. What this returns is
+        # what the comment states, the ledger records and Metaculus is sent.
         return apply_guardrails(aggregated)
 
     def _combination_rule(self, question: MetaculusQuestion) -> str:
