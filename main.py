@@ -1044,6 +1044,10 @@ class GlassEarthBot(ForecastBot):
             "type": getattr(question, "question_type", type(question).__name__),
             "group_option": question.group_question_option,
             "title": question.question_text,
+            # Only to give each option by its index in a sealed record.
+            "option_labels": (
+                list(question.options) if isinstance(question, MultipleChoiceQuestion) else None
+            ),
             "tournaments": question.tournament_slugs,
             # As scheduled when forecast; Metaculus can move a close.
             "scheduled_close_time_utc": (

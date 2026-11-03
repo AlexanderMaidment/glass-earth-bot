@@ -16,7 +16,10 @@ two lines:
 
 The record is the forecast's ledger entry (ledger.ledger_entry) without the
 text copied from Metaculus (WITHHELD_FIELDS, and the readable form of each
-model forecast), plus a fresh random salt of 32 bytes in hex. seal_sha256 is
+model forecast; a multiple choice option appears only as its index in the
+question's option order), plus a fresh random salt of 32 bytes in hex. The
+box holds this same record, so no label is in a public file even encrypted.
+seal_sha256 is
 the SHA-256 of the record as canonical JSON (canonical_json). The salt stops
 anyone finding the forecast by hashing guesses, so it stays inside the box
 until the reveal. The box is base64 of a random 12-byte nonce followed by the
@@ -73,7 +76,9 @@ SEALED_LINE_FIELDS = (
 BOX_LINE_FIELDS = ("seal_sha256", "box")
 REVEAL_LINE_FIELDS = ("revealed", "seal_sha256", "revealed_at_utc", "salt", "record")
 # Text copied from Metaculus: never in a public file, sealed or revealed.
-WITHHELD_FIELDS = frozenset({"title", "group_option", "final_forecast_readable"})
+# option_labels (a multiple choice question's options, in order) is used only
+# to turn each option label into its index.
+WITHHELD_FIELDS = frozenset({"title", "group_option", "final_forecast_readable", "option_labels"})
 # The entry's fields that go into the record, also an allow-list: every field
 # ledger.ledger_entry writes except WITHHELD_FIELDS. A test keeps the two in
 # step, so a new field must be placed in one or the other.
@@ -102,10 +107,16 @@ RECORD_FIELDS = (
     "code_commit",
     "run_url",
 )
-# Of each model forecast, the record keeps the model and the forecast as sent
-# to Metaculus, not its readable form (which, like final_forecast_readable,
-# can spell out multiple choice options).
+# Of each model forecast, the record keeps the model and the forecast, not
+# its readable form (which, like final_forecast_readable, can spell out
+# multiple choice options).
 MODEL_FORECAST_FIELDS = ("model", "forecast")
+# After RECORD_FIELDS, every record has these: for a multiple choice question
+# the number of options (None for other types), then the salt. In
+# final_forecast and each model forecast, a multiple choice option is given
+# by its 0-based index in the question's option order, as text ("0", "1",
+# ...), never by its label, which is site text.
+RECORD_EXTRA_FIELDS = ("option_count", "salt")
 # A sealed line is revealed only once Metaculus reports its question with one
 # of these statuses, never because its scheduled close time has passed:
 # Metaculus can move a close.
@@ -210,21 +221,74 @@ def public_url(url: Any, post_id: Any) -> str | None:
     return None
 
 
+def _option_index(label: Any, options: list[str] | None) -> str:
+    if options is None or label not in options:
+        raise ValueError(
+            "A multiple choice option could not be placed in the question's option order, "
+            "so the forecast is not written rather than show its label"
+        )
+    return str(options.index(label))
+
+
+def options_as_indices(value: Any, options: list[str] | None) -> Any:
+    """
+    A forecast with each multiple choice option label replaced by its 0-based
+    index in the question's option order, as text. Both shapes that carry
+    labels are handled: {"probability_yes_per_category": {label: p}} (what
+    Metaculus is sent) and {"predicted_options": [{"option_name": label, ...}]}.
+    A label that cannot be placed raises ValueError: it is never let through.
+    """
+    if isinstance(value, Mapping):
+        indexed: dict[str, Any] = {}
+        for key, inner in value.items():
+            if key == "probability_yes_per_category" and isinstance(inner, Mapping):
+                pairs = [(_option_index(label, options), share) for label, share in inner.items()]
+                indexed[key] = dict(sorted(pairs, key=lambda pair: int(pair[0])))
+            elif key == "predicted_options" and isinstance(inner, list):
+                indexed[key] = [
+                    {
+                        name: (_option_index(part, options) if name == "option_name" else part)
+                        for name, part in option.items()
+                    }
+                    if isinstance(option, Mapping)
+                    else option
+                    for option in inner
+                ]
+            else:
+                indexed[key] = options_as_indices(inner, options)
+        return indexed
+    if isinstance(value, list):
+        return [options_as_indices(inner, options) for inner in value]
+    return value
+
+
 def record_for(entry: Mapping[str, Any], salt: str) -> dict[str, Any]:
-    """The record a sealed line commits to: the entry's RECORD_FIELDS, then the salt."""
+    """
+    The record a sealed line commits to: the entry's RECORD_FIELDS, with
+    multiple choice options as indices, then option_count and the salt.
+    """
     if not isinstance(salt, str) or not _SALT_HEX.fullmatch(salt):
         raise ValueError(f"The salt must be {SALT_BYTES} bytes in lowercase hex")
+    labels = entry.get("option_labels")
+    options = [str(label) for label in labels] if isinstance(labels, (list, tuple)) else None
     record = {name: entry.get(name) for name in RECORD_FIELDS}
     record["url"] = public_url(entry.get("url"), entry.get("post_id"))
+    record["final_forecast"] = options_as_indices(entry.get("final_forecast"), options)
     forecasts = entry.get("model_forecasts")
     record["model_forecasts"] = (
         [
-            {name: forecast.get(name) for name in MODEL_FORECAST_FIELDS}
+            {
+                name: options_as_indices(forecast.get(name), options)
+                for name in MODEL_FORECAST_FIELDS
+            }
             for forecast in forecasts
             if isinstance(forecast, Mapping)
         ]
         if isinstance(forecasts, list)
         else None
+    )
+    record["option_count"] = (
+        len(options) if options is not None and entry.get("type") == "multiple_choice" else None
     )
     record["salt"] = salt
     return record

@@ -179,6 +179,7 @@ def ledger_entry(
         "type": context.get("type"),
         "group_option": context.get("group_option"),
         "title": context.get("title"),
+        "option_labels": context.get("option_labels"),
         "tournaments": context.get("tournaments"),
         "scheduled_close_time_utc": context.get("scheduled_close_time_utc"),
         "run_mode": run_mode,

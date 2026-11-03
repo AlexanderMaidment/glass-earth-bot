@@ -23,8 +23,14 @@ OPTIONS = ("SYNTHETIC Crimson", "SYNTHETIC Viridian", "SYNTHETIC Cobalt")
 OTHER_KEY = b"SYNTHETIC-other-key-not-the-one!"
 
 
+# Sent in another order than the question's, as a forecast's options can be.
+SENT = {"probability_yes_per_category": {OPTIONS[2]: 0.2, OPTIONS[0]: 0.5, OPTIONS[1]: 0.3}}
+# The same forecast in a record: each option by its index in the question's order.
+INDEXED = {"probability_yes_per_category": {"0": 0.5, "1": 0.3, "2": 0.2}}
+
+
 def multiple_choice_entry(**context_changes):
-    final = {"probability_yes_per_category": dict(zip(OPTIONS, (0.5, 0.3, 0.2)))}
+    final = SENT
     readable = "\n".join(f"- {name}: {share}" for name, share in zip(OPTIONS, ("50.0%", "30.0%", "20.0%")))
     context = {
         "post_id": 7007,
@@ -32,6 +38,7 @@ def multiple_choice_entry(**context_changes):
         "type": "multiple_choice",
         "group_option": GROUP_LABEL,
         "title": TITLE,
+        "option_labels": list(OPTIONS),
         "tournaments": ["fall-futureeval-2026"],
         "scheduled_close_time_utc": "2026-11-04T10:00:00Z",
         "final_forecast_readable": readable,
@@ -204,21 +211,56 @@ class SealTests(unittest.TestCase):
 
     def test_the_record_leaves_out_the_text_copied_from_metaculus(self):
         entry = multiple_choice_entry()
-        record = sl.seal_entry(entry, FAKE_LEDGER_KEY).record
-        self.assertEqual(list(record), [*sl.RECORD_FIELDS, "salt"])
+        sealed = sl.seal_entry(entry, FAKE_LEDGER_KEY)
+        record = sealed.record
+        self.assertEqual(list(record), [*sl.RECORD_FIELDS, *sl.RECORD_EXTRA_FIELDS])
         for name in sl.WITHHELD_FIELDS:
             self.assertNotIn(name, record)
         self.assertNotIn("forecast_readable", set(all_keys(record)))
-        self.assertNotIn(TITLE, json.dumps(record))
-        self.assertNotIn(GROUP_LABEL, json.dumps(record))
-        # What Metaculus was sent is kept, inside the box until the reveal;
-        # for multiple choice it carries the option labels.
-        self.assertEqual(record["final_forecast"], entry["final_forecast"])
-        self.assertEqual(
-            record["model_forecasts"],
-            [{"model": "anthropic/claude-opus-5.5", "forecast": entry["final_forecast"]}],
-        )
+        # Each option is its 0-based index in the question's option order, in
+        # the forecast sent and in each model's forecast; no label is left,
+        # not even inside the box.
+        self.assertEqual(record["final_forecast"], INDEXED)
+        self.assertEqual(record["model_forecasts"], [{"model": "anthropic/claude-opus-5.5", "forecast": INDEXED}])
+        self.assertEqual(record["option_count"], 3)
+        plaintext = sl.canonical_json(sl.open_box(sealed.line["seal_sha256"], sealed.box_line["box"], FAKE_LEDGER_KEY))
+        for text in (TITLE, GROUP_LABEL, *OPTIONS):
+            self.assertNotIn(text, json.dumps(record))
+            self.assertNotIn(text.encode("utf-8"), plaintext)
         self.assertEqual(record["cost_usd"], "0.1162")
+        self.assertIsNone(sl.seal_entry(binary_entry(), FAKE_LEDGER_KEY).record["option_count"])
+
+    def test_options_past_nine_keep_their_hash_through_a_reveal(self):
+        options = [f"SYNTHETIC option {n}" for n in range(12)]
+        shares = {label: round(1 / 12, 6) for label in reversed(options)}
+        entry = multiple_choice_entry(option_labels=options, model_forecasts=[])
+        entry["final_forecast"] = {"probability_yes_per_category": shares}
+        sealed = sl.seal_entry(entry, FAKE_LEDGER_KEY)
+        self.assertEqual(sorted(sealed.record["final_forecast"]["probability_yes_per_category"], key=int),
+                         [str(n) for n in range(12)])
+        self.assertEqual(sealed.record["option_count"], 12)
+        reveal = json.loads(json.dumps(sl.reveal_line_for(sealed.line, sealed.record, datetime.now(timezone.utc))))
+        sl.verify_reveal(sealed.line, reveal)
+
+    def test_an_option_that_cannot_be_placed_is_never_written(self):
+        for changes in ({"option_labels": None}, {"option_labels": [OPTIONS[0], OPTIONS[1]]}):
+            with self.assertRaises(ValueError):
+                sl.seal_entry(multiple_choice_entry(**changes), FAKE_LEDGER_KEY)
+        # A missing context, so no type and no options: still refused.
+        bare = ledger_entry(question_id=1, final_forecast=SENT, context={}, run_mode="x")
+        with self.assertRaises(ValueError):
+            sl.seal_entry(bare, FAKE_LEDGER_KEY)
+        # The other shape that carries labels (a part of a conditional forecast).
+        parts = {"child": {"predicted_options": [{"option_name": OPTIONS[1], "probability": 0.6},
+                                                 {"option_name": OPTIONS[0], "probability": 0.4}]}}
+        self.assertEqual(
+            sl.options_as_indices(parts, list(OPTIONS)),
+            {"child": {"predicted_options": [{"option_name": "1", "probability": 0.6},
+                                             {"option_name": "0", "probability": 0.4}]}},
+        )
+        with self.assertRaises(ValueError):
+            sl.options_as_indices(parts, None)
+        self.assertEqual(sl.options_as_indices({"probability_yes": 0.4}, None), {"probability_yes": 0.4})
 
     def test_seal_then_open_gives_back_the_record_and_its_hash(self):
         for entry in (multiple_choice_entry(), binary_entry()):

@@ -192,11 +192,21 @@ class CommentAndLedgerTests(OfflineTestCase):
     def test_publish_records_exactly_what_was_sent(self):
         bot = self.make_bot(publish=True, skip=True)
         asyncio.run(bot.forecast_questions([binary(), multiple_choice()], return_exceptions=True))
-        # Sealed in the public ledger; the record in each box is exactly what was sent.
+        # Sealed in the public ledger; the record in each box is exactly what
+        # was sent, with each multiple choice option as its index in the
+        # question's option order instead of its label.
         records = {r["question_id"]: r for r in self.sealed_records()}
         self.assertEqual(len(records), 2)
+        options = multiple_choice().options
         for sent in self.metaculus.forecasts():
             body = {k: v for k, v in sent.items() if k not in ("question", "source")}
+            if "probability_yes_per_category" in body:
+                body = {
+                    "probability_yes_per_category": {
+                        str(options.index(label)): share
+                        for label, share in body["probability_yes_per_category"].items()
+                    }
+                }
             self.assertEqual(records[sent["question"]]["final_forecast"], body)
         for comment in self.metaculus.comments():
             self.assertTrue(comment["is_private"])

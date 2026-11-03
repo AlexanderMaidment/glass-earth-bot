@@ -56,11 +56,14 @@ with one read-only request.
 ### The record
 
 The record is the full line the bot would have written without sealing,
-minus the text copied from Metaculus (the title, the sub-question's label and
-the forecast written out in words), plus a salt. The salt is 32 random bytes
-in hex, new for each forecast. Without it a guessed forecast could be hashed
-and checked against `seal_sha256`, so it stays sealed with the rest until the
-reveal.
+minus the text copied from Metaculus (the title, the sub-question's label,
+the options' labels and the forecast written out in words), plus a salt. A
+multiple choice option is given by its 0-based index in the question's
+option order, written as text (`"0"`, `"1"`, ...), so an option's label is
+never in this repository, not even encrypted; the question page on Metaculus
+lists the options in that order. The salt is 32 random bytes in hex, new for
+each forecast. Without it a guessed forecast could be hashed and checked
+against `seal_sha256`, so it stays sealed with the rest until the reveal.
 
 | Field | Meaning |
 | --- | --- |
@@ -70,9 +73,10 @@ reveal.
 | `tournaments` | The tournaments the question belongs to. |
 | `scheduled_close_time_utc` | When the question was due to close, as Metaculus said when it was forecast. |
 | `run_mode` | `tournament`, `market_pulse`, `metaculus_cup`, or `test_questions` for the unscored bot testing area. |
-| `final_forecast` | Exactly what Metaculus was sent: `probability_yes`, `probability_yes_per_category` (keyed by the options' names, as Metaculus requires), or the `continuous_cdf` (201 points for a numeric question, one more than the number of outcomes for a discrete one). |
+| `final_forecast` | What Metaculus was sent: `probability_yes`, `probability_yes_per_category` (keyed by each option's index, where Metaculus was sent its label), or the `continuous_cdf` (201 points for a numeric question, one more than the number of outcomes for a discrete one). |
+| `option_count` | For a multiple choice question, how many options it has; `null` for other types. |
 | `combined_by` | How the final forecast was made: "1 forecast from ..." (the default), or how several were combined. |
-| `model_forecasts` | Each forecast before combining (one by default, `GLASS_EARTH_ENSEMBLE_SIZE` in all), with its model, and its member number when there is more than one. |
+| `model_forecasts` | Each forecast before combining (one by default, `GLASS_EARTH_ENSEMBLE_SIZE` in all), with its model, and its member number when there is more than one; options by index, as in `final_forecast`. |
 | `models_without_forecast` | Forecasts (model, and member number when there is more than one) that failed on this question. |
 | `forecaster_model` | The model that made the forecasts (see `routing.py`). |
 | `route` | Why that model was chosen, from the question's prize value and the daily cap. |

@@ -120,13 +120,26 @@ class PublishingTests(OfflineTestCase):
         self.assertFalse(set(all_keys(lines)) - set(sl.SEALED_LINE_FIELDS))
         self.assertFalse({"probability_yes", "probability_yes_per_category"} & set(all_keys(lines)))
 
-        # The records hold what was sent, without the text copied from Metaculus.
+        # The records hold what was sent, without the text copied from
+        # Metaculus: a multiple choice option is its index in the question's
+        # option order, and option_count says how many there are.
         records = self.sealed_records()
-        self.assertEqual([r["final_forecast"] for r in records], forecasts)
+        binary_sent, choice_sent = forecasts
+        self.assertEqual(records[0]["final_forecast"], binary_sent)
+        self.assertEqual(
+            records[1]["final_forecast"],
+            {
+                "probability_yes_per_category": {
+                    str(OPTIONS.index(label)): share
+                    for label, share in choice_sent["probability_yes_per_category"].items()
+                }
+            },
+        )
+        self.assertEqual([r["option_count"] for r in records], [None, 3])
         for record in records:
-            self.assertEqual(set(record), {*sl.RECORD_FIELDS, "salt"})
-            self.assertNotIn(BINARY_TITLE, json.dumps(record))
-            self.assertNotIn(CHOICE_TITLE, json.dumps(record))
+            self.assertEqual(set(record), {*sl.RECORD_FIELDS, *sl.RECORD_EXTRA_FIELDS})
+            for text in (BINARY_TITLE, CHOICE_TITLE, *OPTIONS):
+                self.assertNotIn(text, json.dumps(record))
             self.assertNotIn("forecast_readable", set(all_keys(record)))
             self.assertRegex(record["salt"], r"^[0-9a-f]{64}$")
         self.assertNotEqual(records[0]["salt"], records[1]["salt"])
