@@ -1605,7 +1605,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--daily-cap-usd",
         type=str,
         default=None,
-        help="The daily spend cap in US dollars for this run (default: GLASS_EARTH_DAILY_CAP_USD, else 5.00)",
+        help="The daily spend cap in US dollars for this run (default: GLASS_EARTH_DAILY_CAP_USD, else 2.00)",
     )
     parser.add_argument(
         "--high-value-reserve-usd",

@@ -41,11 +41,15 @@ LOCAL_SPEND_LOG_PATH = Path("forecasts/dry_run/spend.jsonl")
 SPEND_VERSION = 1
 
 # Defaults, both changeable without editing code (see daily_cap_from_env).
-DEFAULT_DAILY_CAP_USD = Decimal("5.00")
+# US$2.00 fits a batch of 10 high-value questions at the default setup's
+# typical cost of about US$0.12 each (calculated from an assumption; see
+# GLASS_EARTH.md).
+DEFAULT_DAILY_CAP_USD = Decimal("2.00")
 # Low-value questions (for example MiniBench) may not spend into the last part
 # of the cap, so that a high-value question later in the day can still run.
 # Unless set, the reserve is US$2.00 or 40% of the cap, whichever is less, so
-# a smaller cap still leaves room for low-value questions.
+# a smaller cap still leaves room for low-value questions. At the default cap
+# it is US$0.80.
 DEFAULT_HIGH_VALUE_RESERVE_USD = Decimal("2.00")
 DEFAULT_RESERVE_SHARE = Decimal("0.4")
 

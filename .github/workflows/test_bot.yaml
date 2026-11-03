@@ -59,9 +59,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
-          # Glass Earth spending: the daily cap in US dollars (default 5.00) and
-          # the part of it kept for high-value questions (default 2.00, or 40%
-          # of a smaller cap).
+          # Glass Earth spending: the daily cap in US dollars (default 2.00) and
+          # the part of it kept for high-value questions (default 40% of the
+          # cap, at most 2.00: 0.80 at the default cap).
           GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}
           GLASS_EARTH_HIGH_VALUE_RESERVE_USD: ${{ vars.GLASS_EARTH_HIGH_VALUE_RESERVE_USD }}
           # Glass Earth forecasters: forecasts per question (1 to 5, default 1)
