@@ -86,6 +86,7 @@ class TextTests(unittest.TestCase):
     GLASS_EARTH_FILES = [
         "main.py",
         "ledger.py",
+        "sealed_ledger.py",
         "spend.py",
         "credit.py",
         "routing.py",

@@ -7,12 +7,15 @@ Shared fakes for the offline tests. Nothing here touches the network, reads
 - requests.get / requests.post (the Metaculus client) are replaced by
   FakeMetaculus, which serves SYNTHETIC fixtures and records what was posted;
 - credit.fetch_key_info (OpenRouter's key check) is replaced by
-  FakeOpenRouterKey, which serves a SYNTHETIC report or fails.
+  FakeOpenRouterKey, which serves a SYNTHETIC report or fails;
+- a publishing bot seals the ledger with FAKE_LEDGER_KEY, a SYNTHETIC key,
+  and a real GLASS_EARTH_LEDGER_KEY in the environment is never seen.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import os
@@ -50,6 +53,7 @@ for _name in (
     "GLASS_EARTH_MARKET_PULSE",
     "GLASS_EARTH_ENSEMBLE_SIZE",
     "GLASS_EARTH_HIGH_VALUE_MODEL",
+    "GLASS_EARTH_LEDGER_KEY",
 ):
     os.environ.pop(_name, None)
 
@@ -89,6 +93,9 @@ from spend import current_question  # noqa: E402
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FAKE_TOKEN = "synthetic-test-token-not-real"
+# SYNTHETIC ledger key: 32 readable bytes, never a real key.
+FAKE_LEDGER_KEY = b"SYNTHETIC-ledger-key-for-tests!!"
+FAKE_LEDGER_KEY_TEXT = base64.urlsafe_b64encode(FAKE_LEDGER_KEY).decode("ascii")
 
 MetaculusClient._sleep_between_requests = lambda self: None  # type: ignore[assignment]
 
