@@ -840,39 +840,46 @@ class GlassEarthBot(ForecastBot):
         cap check, so that no question starts unless its worst case fits in
         what is left of today's cap. A question that does not fit is skipped
         and logged (in the run log and forecasts/spend.jsonl), not failed.
+
+        ForecastBot's own version starts every question at once (its
+        _max_concurrent_questions limits only research calls). Here the
+        ensemble members of one question run at the same time, which the cap
+        check counts, but questions never do: a second batch started while
+        this one runs against the same meter is refused before it spends.
         """
         reports: list[ForecastReport | BaseException] = []
-        for question, reason in self._select_questions(questions):
-            route = self._route_for(question)
-            tag = _question_tag(question)
-            if route.action == "skip":
-                logger.warning(
-                    f"Spend cap: skipping {question.page_url}"
-                    f"{' (' + question.group_question_option + ')' if question.group_question_option else ''}: {route.reason}"
+        with self.meter.one_batch_at_a_time():
+            for question, reason in self._select_questions(questions):
+                route = self._route_for(question)
+                tag = _question_tag(question)
+                if route.action == "skip":
+                    logger.warning(
+                        f"Spend cap: skipping {question.page_url}"
+                        f"{' (' + question.group_question_option + ')' if question.group_question_option else ''}: {route.reason}"
+                    )
+                    self.meter.record_skip(tag, route.reason, route.worst_case_usd)
+                    continue
+                logger.info(
+                    f"Forecasting {question.page_url} with {_model_label(route.model or '')}: "
+                    f"{route.reason}; {reason}"
                 )
-                self.meter.record_skip(tag, route.reason, route.worst_case_usd)
-                continue
-            logger.info(
-                f"Forecasting {question.page_url} with {_model_label(route.model or '')}: "
-                f"{route.reason}; {reason}"
-            )
-            tokens = (
-                _current_route.set(route),
-                _forecast_reason.set(reason),
-                current_question.set(tag),
-            )
-            try:
-                reports.append(
-                    await self._run_individual_question_with_error_propagation(question)
+                tokens = (
+                    _current_route.set(route),
+                    _forecast_reason.set(reason),
+                    current_question.set(tag),
                 )
-            except Exception as e:
-                if not return_exceptions:
-                    raise
-                reports.append(e)
-            finally:
-                _current_route.reset(tokens[0])
-                _forecast_reason.reset(tokens[1])
-                current_question.reset(tokens[2])
+                try:
+                    reports.append(
+                        await self._run_individual_question_with_error_propagation(question)
+                    )
+                except Exception as e:
+                    if not return_exceptions:
+                        raise
+                    reports.append(e)
+                finally:
+                    _current_route.reset(tokens[0])
+                    _forecast_reason.reset(tokens[1])
+                    current_question.reset(tokens[2])
         if self.folder_to_save_reports_to:
             finished = [r for r in reports if not isinstance(r, BaseException)]
             ForecastReport.save_object_list_to_file_path(

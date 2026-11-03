@@ -27,12 +27,13 @@ import json
 import logging
 import math
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,10 @@ class SpendCapReached(RuntimeError):
 
 class SpendRecordUnreadable(RuntimeError):
     """A spend record could not be read, so today's spending is unknown."""
+
+
+class OverlappingBatchRefused(RuntimeError):
+    """A second batch of questions tried to run alongside one already running."""
 
 
 @dataclass(frozen=True)
@@ -354,6 +359,7 @@ class SpendMeter:
         self.in_flight = ZERO
         self.by_question: dict[int | None, QuestionCost] = {}
         self.skips: list[dict[str, Any]] = []
+        self._batch_running = False
 
     # ------------------------------------------------------------ reading
 
@@ -401,6 +407,29 @@ class SpendMeter:
 
     def question_cost(self, question_id: int | None) -> QuestionCost:
         return self.by_question.setdefault(question_id, QuestionCost())
+
+    @contextmanager
+    def one_batch_at_a_time(self) -> Iterator[None]:
+        """
+        Held while a batch of questions is forecast against this meter.
+
+        The cap check before a question counts what is spent and in flight,
+        not the rest of a question still running, so questions must run one
+        at a time. This refuses a second batch that would run alongside one
+        already running (from the same bot or another bot sharing this meter)
+        before it spends anything.
+        """
+        if self._batch_running:
+            raise OverlappingBatchRefused(
+                "Another batch of questions is already being forecast against this daily cap. "
+                "Questions run one at a time so that each cap check sees everything spent "
+                "before it; start this batch after the other one has finished."
+            )
+        self._batch_running = True
+        try:
+            yield
+        finally:
+            self._batch_running = False
 
     # ------------------------------------------------------------ calls
 
