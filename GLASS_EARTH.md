@@ -51,8 +51,9 @@ participation, and allows one entry per person, as a bot or as a human.
    3 independent forecasts from ...") and what it cost, and the bot will not
    publish a comment that leaves the forecast out. Metaculus makes these
    comments public after each question closes.
-6. **Ledger.** Each forecast Metaculus accepts becomes one line in
-   `forecasts/ledger.jsonl`, with its cost, which the workflow commits.
+6. **Ledger.** Each forecast Metaculus accepts gets a sealed line in
+   `forecasts/ledger.jsonl`, revealed once its question has closed (see
+   Sealed until close), and the workflow commits it.
 7. **Proof.** A daily workflow stamps the ledger with OpenTimestamps.
    `forecasts/README.md` explains the ledger fields and how to check a receipt.
 
@@ -75,7 +76,30 @@ Market Pulse scores the forecast standing when each question closes, and
 bots there must keep their forecasts up to date. `reforecast.py` forecasts a
 Market Pulse question again when its last forecast is 7 days old, and once
 more in the 48 hours before it closes (if the last forecast is at least 20
-hours old). Each forecast gets its own ledger line with the reason.
+hours old). Each forecast gets its own ledger line, with the reason in its
+record.
+
+### Sealed until close
+
+The ledger is public, and other bots may use any forecast they can see while
+its question is open; the Metaculus Terms of Use also bar republishing site
+material. So the ledger never shows a forecast before its question closes,
+and never holds a question's title or other text copied from Metaculus.
+
+For each forecast the ledger gets a sealed line: the question's ID and
+address, when the forecast was made, and the SHA-256 hash of the forecast's
+record. The record holds the forecast, how it was made, what it cost and 32
+random bytes of salt, so that nobody can find the forecast by hashing
+guesses. It goes in `forecasts/sealed_boxes.jsonl`, encrypted with AES-GCM
+under the key in the repository secret `GLASS_EARTH_LEDGER_KEY`.
+
+Each live run first asks Metaculus about the questions still sealed, and
+once Metaculus reports a question closed or resolved, adds its records to
+the ledger. Anyone can check a record against its sealed line and an
+OpenTimestamps receipt; `forecasts/README.md` shows how. A live run without
+a usable key stops before it fetches or spends anything, and dry runs seal
+nothing. `scripts/backup_salts.py` copies the salts and records to a folder
+away from GitHub.
 
 ### Spending
 
@@ -152,19 +176,23 @@ check is in `credit.py`.
 
 ## Setup
 
-### 1. Add the two secrets
+### 1. Add the three secrets
 
 On GitHub, open this repository, then **Settings > Secrets and variables >
-Actions > New repository secret**. Add these two names, each with its value:
+Actions > New repository secret**. Add these three names, each with its value:
 
 - `METACULUS_TOKEN`: the token of your Metaculus bot account.
 - `OPENROUTER_API_KEY`: your OpenRouter key.
+- `GLASS_EARTH_LEDGER_KEY`: the key that seals the ledger, 32 random bytes
+  in URL-safe base64 (`.env.example` shows how to make one). Keep a copy
+  somewhere safe: GitHub never shows a secret again, and without the key no
+  sealed forecast can be revealed.
 
 The workflow files also list other optional names, such as `OPENAI_API_KEY`.
 Leave those unset. Every model call goes through OpenRouter.
 
-`scripts/go_live.py` can do this step from your own computer, reading both
-values from `.env` without showing them (see the top of that file).
+`scripts/go_live.py` can do this step from your own computer, reading all
+three values from `.env` without showing them (see the top of that file).
 
 ### 2. Turn on Actions
 
@@ -200,7 +228,7 @@ question and why.
 
 Run the Test Bot again with the box ticked. It posts forecasts and comments to
 the bot testing area, where nothing is scored. The last step then commits the
-new ledger lines (marked `test_questions`). To see the forecasts on Metaculus,
+new sealed ledger lines and their boxes. To see the forecasts on Metaculus,
 switch to your bot account (**Settings > My Forecasting Bots > Switch to bot
 account**).
 
@@ -255,7 +283,8 @@ forecasts.
 ## Running it on your own computer
 
 You need [uv](https://docs.astral.sh/uv/). Copy `.env.example` to `.env` and
-fill in the same two values. Git ignores `.env`.
+fill in the same values (a dry run needs only the first two). Git ignores
+`.env`.
 
 ```bash
 uv sync --locked
