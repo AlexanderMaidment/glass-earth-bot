@@ -214,11 +214,12 @@ class BinaryGuardrailInTheBotTests(OfflineTestCase):
         )
         [sent] = self.metaculus.forecasts()
         self.assertEqual(sent["probability_yes"], 0.02)
-        [line] = self.read_jsonl("forecasts/ledger.jsonl")
-        self.assertEqual(line["final_forecast"], {"probability_yes": 0.02})
+        # The public ledger line is sealed; its record is read from its box.
+        [record] = self.sealed_records()
+        self.assertEqual(record["final_forecast"], {"probability_yes": 0.02})
         # Each forecast is shown as it was used: guarded too.
         self.assertEqual(
-            [f["forecast"] for f in line["model_forecasts"]], [{"probability_yes": 0.02}] * 3
+            [f["forecast"] for f in record["model_forecasts"]], [{"probability_yes": 0.02}] * 3
         )
 
     def test_one_forecast_of_100_percent_is_submitted_at_98_percent(self):
@@ -249,7 +250,7 @@ class BinaryGuardrailInTheBotTests(OfflineTestCase):
         # forecasting-tools publishes only the two conditional branches.
         self.assertEqual(sent, {3013: 0.02, 3014: 0.98})
         self.assertIn("each yes/no part held between 2% and 98%", report.explanation)
-        recorded = {line["question_id"]: line["final_forecast"] for line in self.read_jsonl("forecasts/ledger.jsonl")}
+        recorded = {record["question_id"]: record["final_forecast"] for record in self.sealed_records()}
         self.assertEqual(recorded, {3013: {"probability_yes": 0.02}, 3014: {"probability_yes": 0.98}})
 
 
@@ -373,8 +374,15 @@ class MultipleChoiceGuardrailInTheBotTests(OfflineTestCase):
         )
         [sent] = self.metaculus.forecasts()
         self.assertEqual(sent["probability_yes_per_category"], got)
-        [line] = self.read_jsonl("forecasts/ledger.jsonl")
-        self.assertEqual(line["final_forecast"]["probability_yes_per_category"], got)
+        # The public ledger line is sealed. Its record gives each option by its
+        # index in the question's option order (as text), never by its label.
+        options = report.question.options
+        [record] = self.sealed_records()
+        self.assertEqual(record["option_count"], len(options))
+        recorded = record["final_forecast"]["probability_yes_per_category"]
+        self.assertEqual(recorded, {str(options.index(name)): share for name, share in got.items()})
+        # Green and Blue are options 1 and 2: both recorded at the 1% floor.
+        self.assertEqual((recorded["1"], recorded["2"]), (0.01, 0.01))
 
     def test_sixty_options_with_zero_medians_are_floored_without_an_error(self):
         names = [f"Option {i}" for i in range(60)]
@@ -584,8 +592,8 @@ class NumericGuardrailInTheBotTests(NumericAssertions, OfflineTestCase):
         self.assertFalse([r for r in reports if isinstance(r, BaseException)])
         sent = {f["question"]: f["continuous_cdf"] for f in self.metaculus.forecasts()}
         recorded = {
-            line["question_id"]: line["final_forecast"]["continuous_cdf"]
-            for line in self.read_jsonl("forecasts/ledger.jsonl")
+            record["question_id"]: record["final_forecast"]["continuous_cdf"]
+            for record in self.sealed_records()
         }
         for report in reports:
             q = report.question
