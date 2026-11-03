@@ -64,6 +64,11 @@ jobs:
           # of a smaller cap).
           GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}
           GLASS_EARTH_HIGH_VALUE_RESERVE_USD: ${{ vars.GLASS_EARTH_HIGH_VALUE_RESERVE_USD }}
+          # Glass Earth forecasters: forecasts per question (1 to 5, default 1)
+          # and whether high-value questions go to Fable (true or false,
+          # default false). A value the bot cannot use stops the run.
+          GLASS_EARTH_ENSEMBLE_SIZE: ${{ vars.GLASS_EARTH_ENSEMBLE_SIZE }}
+          GLASS_EARTH_HIGH_VALUE_MODEL: ${{ vars.GLASS_EARTH_HIGH_VALUE_MODEL }}
       - name: Commit the forecast ledger and spend record
         # Only a run with "publish" ticked submits forecasts. Every run, a dry
         # run too, records what it spent on models in forecasts/spend.jsonl.

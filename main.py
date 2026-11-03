@@ -64,9 +64,14 @@ from metered_llm import MeteredLlm
 from reforecast import forecast_due, latest, policy_for
 from routing import (
     DEFAULT_FORECASTER,
+    ENSEMBLE_SIZE_ENV,
     HIGH_VALUE_FORECASTER,
+    HIGH_VALUE_MODEL_ENV,
     Route,
+    check_ensemble_size,
     choose_route,
+    ensemble_size_from_env,
+    high_value_model_from_env,
     prize_value_usd,
 )
 from spend import (
@@ -87,13 +92,16 @@ if os.getenv("GLASS_EARTH_SKIP_DOTENV") != "1":
     dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Glass Earth forecasters. Each question gets ENSEMBLE_SIZE independent
-# forecasts from one model, and the median is submitted. routing.py picks the
-# model: Claude Opus 5.5 by default, Claude Fable 5.1 for high-value questions
-# while the daily cap allows (DEFAULT_FORECASTER and HIGH_VALUE_FORECASTER).
+# Glass Earth forecasters. Each question gets the bot's ensemble size of
+# independent forecasts from one model, and the median is submitted; with one
+# forecast (the default), that forecast is submitted. routing.py picks the
+# model: Claude Opus 5.5, or Claude Fable 5.1 for high-value questions when
+# Fable is switched on and the daily cap allows (DEFAULT_FORECASTER and
+# HIGH_VALUE_FORECASTER). GLASS_EARTH_ENSEMBLE_SIZE (1 to 5, default 1) and
+# GLASS_EARTH_HIGH_VALUE_MODEL (true or false, default false) change both
+# without editing code; see routing.py.
 # Model IDs and prices are from OpenRouter's public model list
 # (https://openrouter.ai/api/v1/models), read on 2026-11-03; see spend.py.
-ENSEMBLE_SIZE = 3
 # The most a forecaster may write per call, its thinking included. This also
 # bounds the worst-case cost that the daily cap counts.
 FORECASTER_MAX_TOKENS = 10000
@@ -128,8 +136,21 @@ def _model_label(model: str) -> str:
     return model.removeprefix("openrouter/")
 
 
-def _member_label(model: str, member: int) -> str:
-    return f"{_model_label(model)} (member {member} of {ENSEMBLE_SIZE})"
+def _member_label(model: str, member: int, ensemble_size: int) -> str:
+    if ensemble_size == 1:
+        return _model_label(model)
+    return f"{_model_label(model)} (member {member} of {ensemble_size})"
+
+
+def setup_text(ensemble_size: int, high_value_model: bool) -> str:
+    """The forecasting setup in one line, for the run log."""
+    forecasts = "1 forecast" if ensemble_size == 1 else f"{ensemble_size} forecasts (median submitted)"
+    fable = "on, while the cap has room" if high_value_model else "off"
+    return (
+        f"Setup: {forecasts} per question from {_model_label(DEFAULT_FORECASTER)} "
+        f"({ENSEMBLE_SIZE_ENV}); {_model_label(HIGH_VALUE_FORECASTER)} for high-value "
+        f"questions is {fable} ({HIGH_VALUE_MODEL_ENV})."
+    )
 
 
 def _question_for_prompt(question: MetaculusQuestion) -> str:
@@ -224,13 +245,15 @@ class GlassEarthBot(ForecastBot):
     """
     Glass Earth v0, built on FallTemplateBot2026, the Metaculus template bot for
     the Fall 2026 FutureEval Bot Tournament. Changes from the template:
-    - Each question gets ENSEMBLE_SIZE forecasts from the model routing.py
-      picks for it, and the median is submitted.
+    - Each question gets ensemble_size forecasts (GLASS_EARTH_ENSEMBLE_SIZE,
+      1 by default) from the model routing.py picks for it, and the median
+      is submitted.
     - Every model call is metered against a hard daily cap (spend.py); a
       question that could take the day over the cap is skipped, and each
       question's cost goes in the ledger.
     - Questions are forecast one at a time, so the cap check before each one
-      sees everything spent so far.
+      sees everything spent so far, and a second batch that would run
+      alongside one already running against the same cap is refused.
     - Market Pulse questions are forecast again on a schedule
       (reforecast.py); FutureEval and MiniBench questions are forecast once.
     - Each model states a base rate from a reference class first, then adjusts
@@ -323,8 +346,26 @@ class GlassEarthBot(ForecastBot):
         *,
         run_mode: str = "unknown",
         spend_meter: SpendMeter | None = None,
+        ensemble_size: int | None = None,
+        high_value_model: bool | None = None,
         **kwargs: Any,
     ) -> None:
+        # Unless given, both come from the environment (routing.py), and a
+        # value the bot cannot use stops it here, before anything is spent.
+        self.ensemble_size = check_ensemble_size(
+            ensemble_size if ensemble_size is not None else ensemble_size_from_env()
+        )
+        if high_value_model is None:
+            high_value_model = high_value_model_from_env()
+        if not isinstance(high_value_model, bool):
+            raise TypeError("high_value_model must be True or False")
+        self.high_value_model = high_value_model
+        # ForecastBot counts its expected predictions from these two, and the
+        # cap check assumes one research report per question.
+        if kwargs.setdefault("predictions_per_research_report", self.ensemble_size) != self.ensemble_size:
+            raise ValueError("predictions_per_research_report must equal the ensemble size")
+        if kwargs.setdefault("research_reports_per_question", 1) != 1:
+            raise ValueError("Glass Earth runs one research report per question")
         if kwargs.get("metaculus_client") is None:
             kwargs["metaculus_client"] = LedgerClient()
         if kwargs.get("llms") is not None:
@@ -434,12 +475,13 @@ class GlassEarthBot(ForecastBot):
         self, question: MetaculusQuestion
     ) -> ResearchWithPredictions[PredictionTypes]:
         """
-        Same as ForecastBot's version, except that each of the ENSEMBLE_SIZE
-        predictions is labelled with its model and member number.
-        _aggregate_predictions then takes the median: of the probabilities for
-        binary questions, of each option's probability for multiple choice,
-        and of the cumulative distributions, point by point, for numeric,
-        discrete and date questions.
+        Same as ForecastBot's version, except that each of the ensemble_size
+        predictions is labelled with its model (and member number, when there
+        is more than one). _aggregate_predictions then takes the median: of
+        the probabilities for binary questions, of each option's probability
+        for multiple choice, and of the cumulative distributions, point by
+        point, for numeric, discrete and date questions. The median of one
+        forecast is that forecast.
         """
         notepad = await self._get_notepad(question)
         notepad.total_research_reports_attempted += 1
@@ -451,7 +493,7 @@ class GlassEarthBot(ForecastBot):
 
         tasks = [
             self._make_prediction_with(member, question, research_to_use)
-            for member in range(1, ENSEMBLE_SIZE + 1)
+            for member in range(1, self.ensemble_size + 1)
         ]
         valid_predictions, errors, exception_group = (
             await self._gather_results_and_exceptions(tasks)
@@ -475,7 +517,7 @@ class GlassEarthBot(ForecastBot):
         self, member: int, question: MetaculusQuestion, research: str
     ) -> ReasonedPrediction[PredictionTypes]:
         _ensemble_member.set(member)
-        label = _member_label(self._ensemble_llm().model, member)
+        label = _member_label(self._ensemble_llm().model, member, self.ensemble_size)
         try:
             prediction = await self._make_prediction(question, research)
         except Exception as e:
@@ -561,7 +603,17 @@ class GlassEarthBot(ForecastBot):
 
     def _combination_rule(self, question: MetaculusQuestion) -> str:
         model = _model_label(self._forecaster_llm().model)
-        source = f"{ENSEMBLE_SIZE} independent forecasts from {model}"
+        if self.ensemble_size == 1:
+            # One forecast: say so, rather than "the median of 1".
+            source = f"1 forecast from {model}"
+            if isinstance(question, BinaryQuestion):
+                return f"{source}, held between 1% and 99%."
+            if isinstance(question, MultipleChoiceQuestion):
+                return f"{source}, its option probabilities rescaled to sum to 100%."
+            if isinstance(question, (NumericQuestion, DateQuestion)):
+                return f"{source}, submitted as its cumulative distribution."
+            return f"{source}, submitted through the forecasting-tools method for this question type."
+        source = f"{self.ensemble_size} independent forecasts from {model}"
         if isinstance(question, BinaryQuestion):
             return f"the median of {source}, after each is held between 1% and 99%."
         if isinstance(question, MultipleChoiceQuestion):
@@ -719,8 +771,9 @@ class GlassEarthBot(ForecastBot):
     ) -> Decimal:
         """
         The most forecasting this question could cost: every call at its
-        output limit, every retry used. Calculated from MODEL_PRICES; this is
-        what the cap check before a question counts.
+        output limit, every retry used, and one forecast (with its parsing)
+        per member of the ensemble. Calculated from MODEL_PRICES; this is what
+        the cap check before a question counts.
         """
         question_tokens = estimate_tokens(
             self._get_research_prompt(question, self.get_llm("researcher"))
@@ -742,7 +795,7 @@ class GlassEarthBot(ForecastBot):
         # A conditional question forecasts up to 4 linked questions per member.
         forecasts_per_member = 4 if isinstance(question, ConditionalQuestion) else 1
         members = (
-            ENSEMBLE_SIZE
+            self.ensemble_size
             * forecasts_per_member
             * worst_case_call_cost(
                 forecaster_model,
@@ -751,7 +804,7 @@ class GlassEarthBot(ForecastBot):
             )
         )
         parser_calls = (
-            ENSEMBLE_SIZE
+            self.ensemble_size
             * forecasts_per_member
             * self._structure_output_validation_samples
             * STRUCTURE_OUTPUT_TRIES
@@ -766,12 +819,15 @@ class GlassEarthBot(ForecastBot):
         return choose_route(
             value_usd=prize_value_usd(question.tournament_slugs, question.question_weight),
             worst_case_default_usd=self._worst_case_question_cost(question, DEFAULT_FORECASTER),
-            worst_case_high_value_usd=self._worst_case_question_cost(
-                question, HIGH_VALUE_FORECASTER
+            worst_case_high_value_usd=(
+                self._worst_case_question_cost(question, HIGH_VALUE_FORECASTER)
+                if self.high_value_model
+                else None
             ),
             spent_today_usd=self.meter.spent_today + self.meter.in_flight,
             cap_usd=self.meter.cap,
             reserve_usd=self.meter.reserve,
+            use_high_value_model=self.high_value_model,
         )
 
     async def forecast_questions(
@@ -882,7 +938,8 @@ class GlassEarthBot(ForecastBot):
         models_with_forecast = {entry["model"] for entry in model_forecasts}
         forecaster = self._forecaster_llm().model
         expected_members = [
-            _member_label(forecaster, member) for member in range(1, ENSEMBLE_SIZE + 1)
+            _member_label(forecaster, member, self.ensemble_size)
+            for member in range(1, self.ensemble_size + 1)
         ]
         route = _current_route.get()
         cost = self.meter.question_cost(question.id_of_question)
@@ -1578,12 +1635,20 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
         raise SystemExit("--question-url is for dry runs only; add --dry-run")
     if args.max_questions is not None and args.max_questions < 1:
         raise SystemExit("--max-questions must be at least 1")
+    # Settings from the repository variables. A value the bot cannot use stops
+    # the run here, before anything is fetched or spent; it never falls back.
+    try:
+        ensemble_size = ensemble_size_from_env()
+        high_value_model = high_value_model_from_env()
+        cap, reserve = daily_cap_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
+    except ValueError as error:
+        raise SystemExit(f"Stopped before forecasting: {error}") from error
 
     check_environment(strict=True)
     publish_to_metaculus = not args.dry_run
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
+    print(setup_text(ensemble_size, high_value_model))
 
-    cap, reserve = daily_cap_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
     log_path, read_paths = spend_log_paths()
     meter = SpendMeter(
         cap=cap,
@@ -1600,8 +1665,9 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
     bot = GlassEarthBot(
         run_mode=run_mode,
         spend_meter=meter,
+        ensemble_size=ensemble_size,
+        high_value_model=high_value_model,
         research_reports_per_question=1,
-        predictions_per_research_report=ENSEMBLE_SIZE,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         # A dry run keeps its full reports for reading; git ignores this folder.

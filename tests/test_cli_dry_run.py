@@ -78,3 +78,33 @@ class CliDryRunTests(OfflineTestCase):
         self.assertIn("Model: anthropic/claude-opus-5.5", text)
         self.assertRegex(text, r"Cost: US\$[0-9.]+ over \d+ model calls")
         self.assertNotIn(FAKE_KEY, text)
+
+    def test_the_setup_is_logged(self):
+        import main
+
+        with contextlib.redirect_stdout(io.StringIO()) as console:
+            main.run(["--mode", "test_questions", "--dry-run", "--max-questions", "1"])
+        self.assertIn(
+            "Setup: 1 forecast per question from anthropic/claude-opus-5.5 (GLASS_EARTH_ENSEMBLE_SIZE); "
+            "anthropic/claude-fable-5.1 for high-value questions is off (GLASS_EARTH_HIGH_VALUE_MODEL).",
+            console.getvalue(),
+        )
+
+    def test_unusable_settings_stop_the_run_before_anything_is_fetched_or_spent(self):
+        import main
+
+        for name, value in (
+            ("GLASS_EARTH_ENSEMBLE_SIZE", "7"),
+            ("GLASS_EARTH_ENSEMBLE_SIZE", "three"),
+            ("GLASS_EARTH_HIGH_VALUE_MODEL", "yes"),
+        ):
+            self.set_env(**{name: value})
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    main.run(["--mode", "test_questions", "--dry-run"])
+            self.assertIn(name, str(caught.exception))
+            self.assertTrue(str(caught.exception).startswith("Stopped before forecasting"))
+            os.environ.pop(name)
+        self.assertEqual(self.metaculus.gets, [])
+        self.assertEqual(self.models.calls, [])
+        self.assertFalse(Path("forecasts").exists())

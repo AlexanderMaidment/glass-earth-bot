@@ -47,9 +47,59 @@ def multiple_choice():
     )
 
 
+class DefaultSetupTests(OfflineTestCase):
+    def test_default_is_one_forecast_from_opus_stated_plainly(self):
+        bot = self.make_bot(publish=False, skip=False)
+        self.assertEqual((bot.ensemble_size, bot.high_value_model), (1, False))
+        [report] = asyncio.run(bot.forecast_questions([binary()], return_exceptions=True))
+        # The one forecast answers 30%, and that is what is submitted.
+        self.assertEqual(report.prediction, 0.3)
+        self.assertEqual(len(self.models.forecast_calls), 1)
+        self.assertIn("*Final Prediction*: 30.0%", report.explanation)
+        self.assertIn(
+            "*How the final prediction was made*: 1 forecast from anthropic/claude-opus-5.5, "
+            "held between 1% and 99%.",
+            report.explanation,
+        )
+        self.assertNotIn("median of 1", report.explanation)
+        self.assertNotIn("member 1 of", report.explanation)
+        self.assertIn("## R1: anthropic/claude-opus-5.5 reasoning", report.explanation)
+        line = self.read_jsonl("forecasts/dry_run/ledger.jsonl")[0]
+        self.assertEqual([f["model"] for f in line["model_forecasts"]], ["anthropic/claude-opus-5.5"])
+        self.assertEqual(line["models_without_forecast"], [])
+
+    def test_one_forecast_wording_for_every_question_type(self):
+        import main
+
+        bot = self.make_bot(publish=False, skip=False)
+        rule = bot._combination_rule(multiple_choice())
+        self.assertEqual(
+            rule,
+            "1 forecast from anthropic/claude-opus-5.5, its option probabilities rescaled to sum to 100%.",
+        )
+        bot3 = self.make_bot(publish=False, skip=False, ensemble_size=3)
+        self.assertEqual(
+            bot3._combination_rule(binary()),
+            "the median of 3 independent forecasts from anthropic/claude-opus-5.5, "
+            "after each is held between 1% and 99%.",
+        )
+        self.assertEqual(main._member_label("openrouter/x/y", 1, 1), "x/y")
+        self.assertEqual(main._member_label("openrouter/x/y", 2, 3), "x/y (member 2 of 3)")
+
+    def test_unusable_ensemble_settings_are_refused(self):
+        from routing import SettingError
+
+        for size in (0, 6, True, 2.0):
+            with self.assertRaises(SettingError, msg=repr(size)):
+                self.make_bot(publish=False, skip=False, ensemble_size=size)
+        self.set_env(GLASS_EARTH_ENSEMBLE_SIZE="three")
+        with self.assertRaises(SettingError):
+            self.make_bot(publish=False, skip=False)
+
+
 class EnsembleTests(OfflineTestCase):
     def test_binary_is_the_median_of_three_members(self):
-        bot = self.make_bot(publish=False, skip=False)
+        bot = self.make_bot(publish=False, skip=False, ensemble_size=3)
         [report] = asyncio.run(bot.forecast_questions([binary()], return_exceptions=True))
         # Members answer 30%, 35% and 42%.
         self.assertEqual(report.prediction, 0.35)
@@ -59,7 +109,7 @@ class EnsembleTests(OfflineTestCase):
             self.assertIn(f"anthropic/claude-opus-5.5 (member {member} of 3)", report.explanation)
 
     def test_multiple_choice_is_the_per_option_median_rescaled(self):
-        bot = self.make_bot(publish=False, skip=False)
+        bot = self.make_bot(publish=False, skip=False, ensemble_size=3)
         [report] = asyncio.run(bot.forecast_questions([multiple_choice()], return_exceptions=True))
         got = {o.option_name: o.probability for o in report.prediction.predicted_options}
         # Members: (50,30,20), (60,30,10), (40,40,20). Medians 50, 30, 20 sum to 100.
@@ -92,7 +142,7 @@ class EnsembleTests(OfflineTestCase):
             "Reference class and base rate: SYNTHETIC.\n"
             + f"Probability: {[33.33333, 35.55555, 40.0][n % 3]}%"
         )
-        bot = self.make_bot(publish=False, skip=False)
+        bot = self.make_bot(publish=False, skip=False, ensemble_size=3)
         [report] = asyncio.run(bot.forecast_questions([binary()], return_exceptions=True))
         self.assertEqual(report.prediction, 0.3556)
         self.assertIn("*Final Prediction*: 35.56%", report.explanation)
@@ -107,7 +157,7 @@ class EnsembleTests(OfflineTestCase):
             return f"Reference class and base rate: SYNTHETIC.\nProbability: {[0, 35, 42][n % 3]}%"
 
         self.models.forecast_answer = answer
-        bot = self.make_bot(publish=False, skip=False)
+        bot = self.make_bot(publish=False, skip=False, ensemble_size=3)
         [report] = asyncio.run(bot.forecast_questions([binary()], return_exceptions=True))
         self.assertFalse(isinstance(report, BaseException))
         line = self.read_jsonl("forecasts/dry_run/ledger.jsonl")[0]
@@ -136,7 +186,8 @@ class CommentAndLedgerTests(OfflineTestCase):
         lines = self.read_jsonl("forecasts/dry_run/ledger.jsonl")
         self.assertEqual(len(lines), 2)
         self.assertTrue(all(line["dry_run"] for line in lines))
-        self.assertEqual(lines[0]["final_forecast"], {"probability_yes": 0.35})
+        # One forecast per question by default, answering 30%.
+        self.assertEqual(lines[0]["final_forecast"], {"probability_yes": 0.3})
 
     def test_publish_records_exactly_what_was_sent(self):
         bot = self.make_bot(publish=True, skip=True)

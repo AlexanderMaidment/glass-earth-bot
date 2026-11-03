@@ -10,6 +10,7 @@ Shared fakes for the offline tests. Nothing here touches the network, reads
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import os
@@ -42,6 +43,8 @@ for _name in (
     "GLASS_EARTH_DAILY_CAP_USD",
     "GLASS_EARTH_HIGH_VALUE_RESERVE_USD",
     "GLASS_EARTH_MARKET_PULSE",
+    "GLASS_EARTH_ENSEMBLE_SIZE",
+    "GLASS_EARTH_HIGH_VALUE_MODEL",
 ):
     os.environ.pop(_name, None)
 
@@ -75,6 +78,8 @@ from litellm.types.utils import Choices, Message, Usage  # noqa: E402
 import forecasting_tools.ai_models.general_llm as general_llm  # noqa: E402
 from forecasting_tools import MetaculusClient  # noqa: E402
 
+from spend import current_question  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 FAKE_TOKEN = "synthetic-test-token-not-real"
@@ -101,7 +106,8 @@ class SyntheticModels:
     Replaces litellm.acompletion. Answers by role, read from the prompt:
     research, summary, forecast or parsing. Forecast answers come from
     `forecast_answer(model, prompt, call_number)`, a function each test can
-    replace. Every answer is SYNTHETIC.
+    replace. Every answer is SYNTHETIC. Each call yields to the event loop
+    first, as a real call would, so calls running at the same time interleave.
     """
 
     def __init__(self) -> None:
@@ -109,6 +115,9 @@ class SyntheticModels:
         self.forecast_calls: list[dict[str, Any]] = []
         self.forecast_answer: Callable[[str, str, int], str] = self.default_forecast_answer
         self.report_cost = True
+        # A test may set the SYNTHETIC cost each model reports, in US dollars
+        # as a string, instead of the default of US$0.001 per 1,000 tokens.
+        self.cost_by_model: dict[str, str] = {}
         self.fail_models: set[str] = set()
 
     # Synthetic token counts: 1 token per 4 characters, at least 10.
@@ -167,8 +176,15 @@ class SyntheticModels:
     async def acompletion(self, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
         model = kwargs["model"]
         prompt = prompt_text(messages)
-        record = {"model": model, "prompt": prompt, "max_tokens": kwargs.get("max_tokens")}
+        tag = current_question.get()
+        record = {
+            "model": model,
+            "prompt": prompt,
+            "max_tokens": kwargs.get("max_tokens"),
+            "question_id": tag.question_id if tag else None,
+        }
         self.calls.append(record)
+        await asyncio.sleep(0)
         if model in self.fail_models:
             raise RuntimeError("SYNTHETIC model failure")
         if "You are an assistant to a superforecaster" in prompt:
@@ -201,11 +217,14 @@ class SyntheticModels:
             ),
         )
         if self.report_cost:
-            # SYNTHETIC reported cost: US$0.001 per 1,000 tokens.
+            # SYNTHETIC reported cost: US$0.001 per 1,000 tokens, unless the
+            # test set one for this model. litellm carries it as a float.
+            if model in self.cost_by_model:
+                cost = float(self.cost_by_model[model])
+            else:
+                cost = (prompt_tokens + completion_tokens) / 1_000_000
             response._hidden_params = {
-                "additional_headers": {
-                    "llm_provider-x-litellm-response-cost": (prompt_tokens + completion_tokens) / 1_000_000
-                }
+                "additional_headers": {"llm_provider-x-litellm-response-cost": cost}
             }
         else:
             response._hidden_params = {}
@@ -288,18 +307,39 @@ class OfflineTestCase(unittest.TestCase):
             **kwargs,
         )
 
-    def make_bot(self, *, publish: bool, skip: bool = True, meter=None, run_mode: str = "offline-test"):
+    def make_bot(
+        self,
+        *,
+        publish: bool,
+        skip: bool = True,
+        meter=None,
+        run_mode: str = "offline-test",
+        ensemble_size: int | None = None,
+        high_value_model: bool | None = None,
+    ):
+        """A bot as main.run builds it. The two settings default to the environment."""
         import main
 
         return main.GlassEarthBot(
             run_mode=run_mode,
             spend_meter=meter or self.make_meter(run_mode=run_mode, dry_run=not publish),
+            ensemble_size=ensemble_size,
+            high_value_model=high_value_model,
             research_reports_per_question=1,
-            predictions_per_research_report=main.ENSEMBLE_SIZE,
             publish_reports_to_metaculus=publish,
             skip_previously_forecasted_questions=skip,
             extra_metadata_in_explanation=True,
         )
+
+    def set_env(self, **values: str) -> None:
+        """Set environment variables for this test only."""
+        for name, value in values.items():
+            previous = os.environ.get(name)
+            os.environ[name] = value
+            if previous is None:
+                self.addCleanup(os.environ.pop, name, None)
+            else:
+                self.addCleanup(os.environ.__setitem__, name, previous)
 
     @staticmethod
     def read_jsonl(path: str | Path) -> list[dict[str, Any]]:

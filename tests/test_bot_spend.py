@@ -79,10 +79,11 @@ class MeterIntegrationTests(OfflineTestCase):
 
         self.metaculus.posts_page = _page_for("bot-testing-area", {90011, 90012})
         meter = self.make_meter(cap="5.00", reserve="0")
-        bot = self.make_bot(publish=True, skip=False, meter=meter)
-        # A cap just above one question's worst case (about US$0.98 with Opus,
-        # calculated) allows the first question, and the first question's
-        # SYNTHETIC spending (about US$0.01) leaves too little for the second.
+        bot = self.make_bot(publish=True, skip=False, meter=meter, ensemble_size=3)
+        # A cap just above one question's worst case (about US$0.98 with three
+        # Opus forecasts, calculated) allows the first question, and the first
+        # question's SYNTHETIC spending (about US$0.01) leaves too little for
+        # the second. test_bot_batch.py checks the same with the defaults.
         first = bot.metaculus_client.get_all_open_questions_from_tournament("bot-testing-area")[0]
         worst = bot._worst_case_question_cost(first, main.DEFAULT_FORECASTER)
         self.assertGreater(worst, Decimal("0.5"))
@@ -101,15 +102,17 @@ class MeterIntegrationTests(OfflineTestCase):
     def test_cap_holds_across_runs_on_the_same_utc_day(self):
         Path("forecasts").mkdir()
         today = spend.utc_day(datetime.now(timezone.utc))
+        # US$0.40 left is less than one question's worst case (about US$0.46
+        # with one Opus forecast, calculated).
         earlier = [
-            {"utc_day": today, "event": "model_call", "cap_basis_usd": "4.50"},
+            {"utc_day": today, "event": "model_call", "cap_basis_usd": "4.60"},
             {"utc_day": "2000-01-01", "event": "model_call", "cap_basis_usd": "99"},
         ]
         Path("forecasts/spend.jsonl").write_text(
             "".join(json.dumps(r) + "\n" for r in earlier), encoding="utf-8"
         )
         meter = self.make_meter(cap="5.00", reserve="0")
-        self.assertEqual(meter.spent_today, Decimal("4.50"))
+        self.assertEqual(meter.spent_today, Decimal("4.60"))
         self.metaculus.posts_page = _page_for("bot-testing-area", {90011})
         bot = self.make_bot(publish=True, skip=False, meter=meter)
         reports = asyncio.run(bot.forecast_on_tournament("bot-testing-area", return_exceptions=True))
@@ -150,25 +153,75 @@ class MeterIntegrationTests(OfflineTestCase):
                 llms={"default": GeneralLlm(model="openrouter/anthropic/claude-opus-5.5")},
             )
 
-    def test_high_value_question_is_routed_to_fable(self):
+    def test_high_value_question_gets_one_opus_forecast_by_default(self):
         self.metaculus.posts_page = _page_for("fall-futureeval-2026", {90011})
         bot = self.make_bot(publish=True, skip=True)
         asyncio.run(bot.forecast_on_tournament("fall-futureeval-2026", return_exceptions=True))
-        models = {c["model"] for c in self.models.forecast_calls}
-        self.assertEqual(models, {"openrouter/anthropic/claude-fable-5.1"})
+        self.assertEqual(
+            [c["model"] for c in self.models.forecast_calls], ["openrouter/anthropic/claude-opus-5.5"]
+        )
+        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        self.assertIn("high value", line["route"])
+        self.assertIn("Fable is off (GLASS_EARTH_HIGH_VALUE_MODEL), so Opus", line["route"])
+        self.assertTrue(line["combined_by"].startswith("1 forecast from anthropic/claude-opus-5.5"))
+
+    def test_stronger_setup_through_the_variables_routes_to_fable(self):
+        # The two repository variables, as the workflows pass them.
+        self.set_env(GLASS_EARTH_ENSEMBLE_SIZE="3", GLASS_EARTH_HIGH_VALUE_MODEL="true")
+        self.metaculus.posts_page = _page_for("fall-futureeval-2026", {90011})
+        bot = self.make_bot(publish=True, skip=True)
+        self.assertEqual((bot.ensemble_size, bot.high_value_model), (3, True))
+        asyncio.run(bot.forecast_on_tournament("fall-futureeval-2026", return_exceptions=True))
+        self.assertEqual(
+            [c["model"] for c in self.models.forecast_calls],
+            ["openrouter/anthropic/claude-fable-5.1"] * 3,
+        )
         line = self.read_jsonl("forecasts/ledger.jsonl")[0]
         self.assertEqual(line["forecaster_model"], "anthropic/claude-fable-5.1")
         self.assertIn("high value", line["route"])
+        self.assertIn("the cap has room for Fable", line["route"])
         self.assertIn("3 independent forecasts from anthropic/claude-fable-5.1", line["combined_by"])
+        self.assertEqual(len(line["model_forecasts"]), 3)
 
     def test_high_value_question_falls_back_to_opus_under_a_tight_cap(self):
         self.metaculus.posts_page = _page_for("fall-futureeval-2026", {90011})
         meter = self.make_meter(cap="2.00", reserve="0")
-        bot = self.make_bot(publish=True, skip=True, meter=meter)
+        bot = self.make_bot(publish=True, skip=True, meter=meter, ensemble_size=3, high_value_model=True)
         asyncio.run(bot.forecast_on_tournament("fall-futureeval-2026", return_exceptions=True))
         self.assertEqual(
             {c["model"] for c in self.models.forecast_calls}, {"openrouter/anthropic/claude-opus-5.5"}
         )
+        line = self.read_jsonl("forecasts/ledger.jsonl")[0]
+        self.assertIn("no room for Fable", line["route"])
+
+    def test_worst_case_counts_every_forecast_in_the_ensemble(self):
+        import main
+
+        self.metaculus.posts_page = _page_for("bot-testing-area", {90011})
+        question = self.make_bot(publish=False, skip=False).metaculus_client.get_all_open_questions_from_tournament(
+            "bot-testing-area"
+        )[0]
+        worst = {
+            n: self.make_bot(publish=False, skip=False, ensemble_size=n)._worst_case_question_cost(
+                question, main.DEFAULT_FORECASTER
+            )
+            for n in (1, 2, 3, 5)
+        }
+        # Research and summary are the same at every size; each extra
+        # forecast adds the same amount (its call and its parsing).
+        step = worst[2] - worst[1]
+        self.assertGreater(step, Decimal("0.2"))
+        self.assertEqual(worst[3] - worst[1], 2 * step)
+        self.assertEqual(worst[5] - worst[1], 4 * step)
+        # A cap just under five forecasts' worst case skips the question; just
+        # over, it is forecast five times.
+        for cap, forecasts in ((worst[5] - Decimal("0.0001"), 0), (worst[5] + Decimal("0.0001"), 5)):
+            self.models.forecast_calls.clear()
+            meter = self.make_meter(cap=str(cap), reserve="0")
+            bot = self.make_bot(publish=False, skip=False, meter=meter, ensemble_size=5)
+            asyncio.run(bot.forecast_questions([question], return_exceptions=True))
+            self.assertEqual(len(self.models.forecast_calls), forecasts, str(cap))
+            self.assertEqual(len(meter.skips), 1 if forecasts == 0 else 0)
 
 
 if __name__ == "__main__":

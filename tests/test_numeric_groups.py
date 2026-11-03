@@ -61,7 +61,8 @@ class NumericGroupTests(OfflineTestCase):
         self.forecast_tournament(bot)
         labels = ["Examplecorp", "Samplesoft", "Revenue (synthetic)", "Gross margin (synthetic)"]
         forecast_prompts = [c["prompt"] for c in self.models.forecast_calls]
-        self.assertEqual(len(forecast_prompts), 4 * 3)
+        # One forecast per sub-question by default.
+        self.assertEqual(len(forecast_prompts), 4 * bot.ensemble_size)
         for prompt in forecast_prompts:
             named = [label for label in labels if f'only about: "{label}"' in prompt]
             self.assertEqual(len(named), 1, prompt[:300])
