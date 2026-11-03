@@ -14,7 +14,7 @@ Each line is a JSON object with these fields:
 
 | Field | Meaning |
 | --- | --- |
-| `ledger_version` | Format version of the line (currently 1). |
+| `ledger_version` | Format version of the line (currently 2; version 1 lines lack the fields from `forecaster_model` on). |
 | `recorded_at_utc` | When Metaculus accepted the forecast, in UTC. |
 | `question_id` | Metaculus question ID. A group post has one per sub-question. |
 | `post_id` | Metaculus post ID, the number in the question's web address. |
@@ -23,12 +23,20 @@ Each line is a JSON object with these fields:
 | `group_option` | For a sub-question of a group, the option it is about. |
 | `title` | The question as written. |
 | `tournaments` | The tournaments the question belongs to. |
-| `run_mode` | `tournament`, `metaculus_cup`, or `test_questions` for the unscored bot testing area. |
-| `final_forecast` | Exactly what Metaculus was sent: `probability_yes`, `probability_yes_per_category`, or the 201-point `continuous_cdf`. |
+| `run_mode` | `tournament`, `market_pulse`, `metaculus_cup`, or `test_questions` for the unscored bot testing area. |
+| `final_forecast` | Exactly what Metaculus was sent: `probability_yes`, `probability_yes_per_category`, or the `continuous_cdf` (201 points for a numeric question, one more than the number of outcomes for a discrete one). |
 | `final_forecast_readable` | The same forecast as the comment on Metaculus states it. |
 | `combined_by` | How the model forecasts were combined. |
-| `model_forecasts` | Each model's own forecast, before combining. |
-| `models_without_forecast` | Ensemble models that failed on this question. |
+| `model_forecasts` | Each of the three forecasts, before combining, with its model and member number. |
+| `models_without_forecast` | Forecasts (model and member number) that failed on this question. |
+| `forecaster_model` | The model that made the forecasts (see `routing.py`). |
+| `route` | Why that model was chosen, from the question's prize value and the daily cap. |
+| `forecast_reason` | Why the question was forecast now: a first forecast, or for Market Pulse a scheduled re-forecast or the final refresh before close. |
+| `cost_usd` | What forecasting this question cost, in US dollars, over all its model calls; `Unknown` if any call's cost could not be known. |
+| `cost_usd_cap_basis` | What the daily cap counted for it: known costs, plus the worst case of each unknown one. |
+| `cost_by_model_usd` | The known part of the cost, by model. |
+| `model_calls` | How many model calls the question took. |
+| `prices_retrieved_at_utc` | When the prices used for calculated costs were read from OpenRouter's model list. |
 | `code_commit` | The commit of this repository that made the forecast. |
 | `run_url` | The GitHub Actions run. Its log shows the full reasoning for 90 days. |
 
@@ -37,6 +45,32 @@ and Metaculus makes those comments public after the question closes.
 
 A dry run submits nothing. It writes the forecast it would have submitted to
 `forecasts/dry_run/`, which git ignores.
+
+A Market Pulse question can have several lines, one per forecast, because
+Market Pulse scores the forecast standing at each question's close and
+expects bots to update. FutureEval and MiniBench questions have one line each.
+
+## spend.jsonl
+
+One line per model call, per refused call and per question skipped by the
+daily cap, written by every run on GitHub, dry runs included, because a dry
+run spends too. The bot reads today's lines (by UTC day) at the start of each
+run, so the cap holds across runs. Runs on your own computer write to
+`forecasts/dry_run/spend.jsonl` instead and count both files.
+
+| Field | Meaning |
+| --- | --- |
+| `event` | `model_call`, `call_refused` (the cap had no room) or `question_skipped`. |
+| `utc_day` | The day the cap counts it against. |
+| `question_id`, `post_id` | The question the call was for. |
+| `purpose`, `model` | `researcher`, `summarizer`, `forecaster` or `parser`, and the model. |
+| `outcome` | `ok`, or `failed (...)` with the error type. |
+| `prompt_tokens`, `completion_tokens`, `cached_prompt_tokens` | As the response reported them. |
+| `cost_usd` | The call's cost in US dollars, or `Unknown`. |
+| `cost_source` | `openrouter_reported`, `calculated_from_tokens` or `unknown`. |
+| `worst_case_usd` | The most the call could have cost, which the cap checked before it. |
+| `cap_basis_usd` | What the cap counts: the cost, or the worst case when the cost is unknown. |
+| `daily_cap_usd` | The cap in force for that run. |
 
 ## proofs/
 
