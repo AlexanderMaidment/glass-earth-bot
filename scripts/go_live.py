@@ -43,10 +43,13 @@ REPOSITORY = "AlexanderMaidment/glass-earth-bot"
 BRANCH = "engine-one-ready"
 SECRET_NAMES = ("METACULUS_TOKEN", "OPENROUTER_API_KEY")
 PLACEHOLDERS = {"", "1234567890", "REPLACE_ME", "your-token-here", "your-api-key-here"}
-# One test-area question costs about US$0.12 with the default single Opus
-# forecast (calculated from an assumption) and at most about US$0.46 (the cap
-# check's calculated worst case; about US$1.50 with five forecasts), so the
-# dry run gets a US$2.00 cap and no reserve (test questions are low value).
+# One test-area question cost US$0.13286552 in the 3 November 2026 dry run
+# (observed: OpenRouter's report on the key and the bot's own record agree).
+# A question starts when its reservation fits under the cap (US$0.27 with the
+# default single Opus forecast: twice that cost, rounded up to the cent), and
+# it may then cost up to its calculated worst case (about US$0.46; about
+# US$1.50 with five forecasts), so the dry run gets a US$2.00 cap and no
+# reserve (test questions are low value). This cap has no end date.
 DRY_RUN_CAP_USD = "2.00"
 CONFIRM_WORD = "PUBLISH"
 MASK = "[hidden]"

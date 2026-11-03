@@ -68,9 +68,28 @@ run, so the cap holds across runs. Runs on your own computer write to
 | `prompt_tokens`, `completion_tokens`, `cached_prompt_tokens` | As the response reported them. |
 | `cost_usd` | The call's cost in US dollars, or `Unknown`. |
 | `cost_source` | `openrouter_reported`, `calculated_from_tokens` or `unknown`. |
-| `worst_case_usd` | The most the call could have cost, which the cap checked before it. |
+| `worst_case_usd` | For a call: the most it could have cost, which the cap checked before it. For a skipped question: its calculated worst case, for information. |
+| `reservation_usd` | Only for a skipped question: what it needed left of the cap to start (its reservation), which did not fit. |
+| `over_cap_allowance_usd` | Only on a call that took the day past the daily cap under the allowance of a question already started: that question's allowance, its calculated worst case minus its reservation. |
 | `cap_basis_usd` | What the cap counts: the cost, or the worst case when the cost is unknown. |
-| `daily_cap_usd` | The cap in force for that run. |
+| `daily_cap_usd` | The cap in force when the line was written (the default `2.00` again after the last day set by `GLASS_EARTH_DAILY_CAP_UNTIL_UTC`). |
+
+## credit_warnings.jsonl
+
+One line for each UTC day on which a run on GitHub ended with a failure on
+purpose because the bot's OpenRouter key had less than US$5.00 left, so that
+GitHub emailed the owner. Each run reads it so that this happens at most once
+a UTC day. The file appears after the first such day.
+
+| Field | Meaning |
+| --- | --- |
+| `credit_warning_version` | Format version of the line (currently 1). |
+| `recorded_at_utc`, `utc_day` | When the run failed on purpose, and the UTC day it counts for. |
+| `event` | `low_credit_run_failed`. |
+| `limit_remaining_usd` | What OpenRouter reported left on the key at the start of that run. |
+| `limit_usd` | The key's limit as OpenRouter reported it, or `Unknown`. |
+| `warn_below_usd` | The warning level (`5.00`). |
+| `run_mode`, `code_commit`, `run_url` | The run that failed on purpose. |
 
 ## proofs/
 

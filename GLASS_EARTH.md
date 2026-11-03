@@ -82,19 +82,48 @@ hours old). Each forecast gets its own ledger line with the reason.
 `spend.py` meters every model call. Before each call the bot works out the
 most it could cost (every output token used, at OpenRouter's list price), and
 it never starts a call that could take the day's spending over the **daily
-cap** (default **US$2.00** per UTC day). Before each question it checks that
-the question's worst case, with every one of its forecasts, fits; if not, it
-skips the question and logs why, instead of failing halfway. Low-value
-questions do not spend into the part of the cap kept for high-value
-questions: 40% of the cap, at most US$2.00 (US$0.80 at the default cap).
-When Fable is switched on, it is used only while the cap still has room for
-a Fable question plus one more default question.
+cap** (default **US$2.00** per UTC day), except to let a question that has
+already started finish (below). The repository variable
+`GLASS_EARTH_DAILY_CAP_USD` changes the cap, and
+`GLASS_EARTH_DAILY_CAP_UNTIL_UTC` (a date, `YYYY-MM-DD`) gives that cap a
+last UTC day: from the next day the default US$2.00 applies again, and the
+default reserve below follows it. A run still going at midnight UTC takes
+the new day's cap.
 
-Because each question must fit at its worst case (about US$0.46 for a short
-question with one Opus forecast), the default cap lets about 14 high-value
-questions start in a UTC day at the typical cost under Cost, or about 7
-low-value ones, which stay out of the US$0.80 reserve (both calculated from
-that assumption). A batch of 10 typical questions costs about US$1.16.
+Before each question the bot checks that the question's **reservation** fits
+in what is left of the cap; if not, it skips the question and logs why,
+instead of failing halfway. The reservation is twice the measured cost of one
+real question, rounded up to the cent: **US$0.27 per Opus forecast**
+(calculated from US$0.13286552, observed for one test-area question on 3
+November 2026; see Cost), times the number of forecasts, and 4 times that
+for a conditional question, which forecasts four linked questions. The
+repository variable `GLASS_EARTH_QUESTION_RESERVATION_USD` changes the amount
+per forecast. A Fable question must fit at its calculated worst case instead.
+
+A question can cost more than its reservation. Once it has started, its calls
+may take the day's spending past the cap by up to the question's calculated
+worst case minus its reservation, so that a question started near the cap is
+not stopped after its research is paid for. With one Opus forecast that is
+about US$0.19 for a short question and about US$0.20 for the measured one
+(calculated); it grows by about US$0.002 for every 1,000 characters of
+question text. A call that needed this allowance is marked in
+`forecasts/spend.jsonl`. No new question can start once the cap is passed,
+so a day ends at most one question's allowance over the cap: about US$0.20
+for a question of typical length (calculated). The OpenRouter key's own
+limit is the hard stop.
+
+Low-value questions do not start in the part of the cap kept for high-value
+questions: 40% of the cap, at most US$2.00 (US$0.80 at the default cap). One
+that then costs more than its reservation can use a little of that part.
+When Fable is switched on, it is used only while the cap still has room for
+a Fable question at its worst case plus one more Opus question's
+reservation.
+
+At the measured cost, the default cap lets about 14 high-value questions
+start in a UTC day, or about 7 low-value ones, which stay out of the US$0.80
+reserve. A US$4.00 cap lets about 29 high-value or 17 low-value questions
+start (its reserve is US$1.60). All four figures are calculated from the
+measured cost of one question.
 
 Questions run one at a time, so each cap check sees everything spent before
 it. The forecasts of one question run together, and the check counts all of
@@ -108,8 +137,18 @@ cap counts it at its worst case. Every call is a line in
 `forecasts/spend.jsonl`, which the workflows commit after each run so that
 the next run counts it.
 
+At the start of each run the bot asks OpenRouter how much is left on its key
+(a free call to `https://openrouter.ai/api/v1/key`). With less than US$5.00
+left, the run says so in its log, as a warning on the GitHub Actions run and
+on the run's summary page. Once a UTC day, a run on GitHub that can publish
+then ends with a red cross after all its forecasting is done, so that GitHub
+emails you as it does for any failed run. `forecasts/credit_warnings.jsonl`
+records each day it did this. If OpenRouter does not answer, the run logs the
+credit as `Unknown` and carries on.
+
 The models, token limits and worst-case assumptions are set at the top of
-`main.py`; the prices are in `spend.py`.
+`main.py`; the prices and the reservation are in `spend.py`, and the credit
+check is in `credit.py`.
 
 ## Setup
 
@@ -146,7 +185,8 @@ A successful dry run:
 - passes the **Run the offline tests** step first;
 - shows `Running mode=test_questions, publish=no (dry run)` near the top of the
   **Run bot** step, then a `Setup:` line naming the forecasts per question
-  and whether Fable is on;
+  and whether Fable is on, the credit left on the OpenRouter key, and the
+  daily cap;
 - shows each forecast's reasoning in that log, starting from its base rate;
 - ends that step with `Bot produced (dry run) N forecast(s).`, one line per
   question with a tick, and a `Spend (UTC day ...)` line;
@@ -174,24 +214,30 @@ value `true`. The tournament workflow then runs every 20 minutes (at 7, 27 and
 Optional repository variables (the same page, **New repository variable**):
 
 - `GLASS_EARTH_DAILY_CAP_USD`: the daily cap in US dollars (default `2.00`).
+- `GLASS_EARTH_DAILY_CAP_UNTIL_UTC`: the last UTC day that cap applies,
+  written `YYYY-MM-DD` (for example `2026-11-08`). From the next UTC day the
+  cap is `2.00` again. Unset, the cap has no end date.
 - `GLASS_EARTH_HIGH_VALUE_RESERVE_USD`: the part of the cap kept for
   high-value questions (default 40% of the cap, at most `2.00`: `0.80` at the
-  default cap).
+  default cap, `1.60` at a cap of `4.00`).
+- `GLASS_EARTH_QUESTION_RESERVATION_USD`: what a question needs left of the
+  cap to start, per Opus forecast (default `0.27`, twice the measured cost of
+  one question).
 - `GLASS_EARTH_ENSEMBLE_SIZE`: forecasts per question, a whole number from
   `1` to `5` (default `1`). With more than one, the median is submitted.
 - `GLASS_EARTH_HIGH_VALUE_MODEL`: `true` sends high-value questions to Fable
   while the cap has room (default off). Fable needs room for its own worst
-  case plus a default question's: about US$1.28 with one forecast and US$3.04
-  with three (calculated), so with three raise the cap above that, or every
-  question gets Opus.
+  case plus an Opus question's reservation: about US$1.09 with one forecast
+  and US$2.87 with three (calculated), so with three raise the cap above
+  that, or every question gets Opus.
 - `GLASS_EARTH_MARKET_PULSE`: `true` adds Market Pulse to each tournament run.
   Market Pulse allows one entry per person, so decide first whether to enter
   as the bot.
 
-A value the bot cannot use for the cap, the reserve, the ensemble size or
-the Fable switch stops the run with a message naming the variable, before
-anything is fetched or spent; it never falls back to a default. Cost shows
-what each setup costs per question.
+A value the bot cannot use for the cap, its end date, the reserve, the
+reservation, the ensemble size or the Fable switch stops the run with a
+message naming the variable, before anything is fetched or spent; it never
+falls back to a default. Cost shows what each setup costs per question.
 
 To pause, change `GLASS_EARTH_LIVE` to `false`. The Metaculus Cup workflow has
 its own switch, `GLASS_EARTH_CUP_LIVE`, and stays off without it. Bots win no
@@ -222,10 +268,10 @@ would have written and its spending in `forecasts/dry_run/`, which git also
 ignores. `--max-questions N` limits each target to N questions,
 `--question-url URL` forecasts one question (dry runs only), and
 `--daily-cap-usd X` and `--high-value-reserve-usd Y` set the cap and reserve
-for that run. To try another setup, set `GLASS_EARTH_ENSEMBLE_SIZE` or
-`GLASS_EARTH_HIGH_VALUE_MODEL` in the shell first. To keep the Python environment
-out of a synced folder such as OneDrive, set `UV_PROJECT_ENVIRONMENT` to a
-folder elsewhere first.
+for that run (a cap set this way has no end date). To try another setup, set
+`GLASS_EARTH_ENSEMBLE_SIZE` or `GLASS_EARTH_HIGH_VALUE_MODEL` in the shell
+first. To keep the Python environment out of a synced folder such as
+OneDrive, set `UV_PROJECT_ENVIRONMENT` to a folder elsewhere first.
 
 The offline tests use made-up questions and model answers (marked SYNTHETIC)
 and refuse every network connection.
@@ -246,16 +292,26 @@ OpenRouter's public model list (`GET https://openrouter.ai/api/v1/models`) at
 Cost per question for each setup. Fable applies only to high-value
 questions; the others always get Opus.
 
-| Setup | Repository variables | Typical (calculated from an assumption) | Worst case, short question (calculated) |
-| --- | --- | --- | --- |
-| Opus 5.5, 1 forecast (default) | none | about US$0.12 | about US$0.46 |
-| Opus 5.5, 3 forecasts | `GLASS_EARTH_ENSEMBLE_SIZE=3` | about US$0.27 | about US$0.98 |
-| Fable 5.1, 1 forecast | `GLASS_EARTH_HIGH_VALUE_MODEL=true` | about US$0.23 | about US$0.82 |
-| Fable 5.1, 3 forecasts | both of the above | about US$0.61 | about US$2.06 |
+| Setup | Repository variables | Typical (calculated from an assumption) | Needed to start (calculated) | Worst case, short question (calculated) |
+| --- | --- | --- | --- | --- |
+| Opus 5.5, 1 forecast (default) | none | about US$0.12 (US$0.13 measured) | US$0.27 | about US$0.46 |
+| Opus 5.5, 3 forecasts | `GLASS_EARTH_ENSEMBLE_SIZE=3` | about US$0.27 | US$0.81 | about US$0.98 |
+| Fable 5.1, 1 forecast | `GLASS_EARTH_HIGH_VALUE_MODEL=true` | about US$0.23 | its worst case | about US$0.82 |
+| Fable 5.1, 3 forecasts | both of the above | about US$0.61 | its worst case | about US$2.06 |
 
-The worst case is what the cap check counts, from these prices and the
-token limits in `main.py`. The typical figures are calculated from an
-assumption, not a measurement:
+One real question has been measured. The 3 November 2026 dry run of one
+test-area question (numeric, one Opus forecast) cost US$0.13286552: OpenRouter
+reported that much used on the key, and the bot's own record of the run's five
+calls adds up to the same (observed). Research cost US$0.0875395, the research
+summary US$0.0002966, the forecast US$0.044644 and two parsing calls
+US$0.00038542, so research cost more than the assumption below and the
+forecast less. What an Opus question needs to start, its reservation, is
+twice that cost rounded up to the cent, per forecast.
+
+The worst case comes from these prices and the token limits in `main.py`. A
+Fable question needs it to start; an Opus question that has started may go
+up to it, past its reservation (see Spending). The typical figures are
+calculated from an assumption, not a measurement:
 
 - Research: one call of about 4,000 tokens in and 3,000 out, with two web
   searches: US$0.004 + US$0.015 + US$0.02 = US$0.039.
@@ -270,7 +326,8 @@ assumption, not a measurement:
 - Fable, 1 forecast: 0.039 + 0.00045 + 0.1907 = US$0.23015.
 - Fable, 3 forecasts: 0.039 + 0.00045 + 3 x 0.1907 = US$0.61155.
 
-Research is about a third of the default's cost. Each line of
+In this assumption research is about a third of the default's cost; in the
+measured question it was about two thirds. Each line of
 `forecasts/spend.jsonl` shows the real cost; OpenRouter's Activity page
 shows the same.
 
