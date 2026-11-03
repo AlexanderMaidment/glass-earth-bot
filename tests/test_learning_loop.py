@@ -16,13 +16,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from support import FAKE_TOKEN, REPO, OfflineTestCase, prompt_text  # noqa: I001  (blocks the network first)
+from support import FAKE_LEDGER_KEY, FAKE_TOKEN, REPO, OfflineTestCase, prompt_text  # noqa: I001  (blocks the network first)
 
 import requests
 from litellm import ModelResponse
 from litellm.types.utils import Choices, Message, Usage
 
 import forecasting_tools.ai_models.general_llm as general_llm
+
+import sealed_ledger
+from ledger import ledger_entry
 
 SPEC = importlib.util.spec_from_file_location("learning_loop", REPO / "scripts" / "learning_loop.py")
 learning_loop = importlib.util.module_from_spec(SPEC)
@@ -171,6 +174,32 @@ def reveal(seal, question_id, post_id, forecast, *, recorded="2026-10-20T00:00:0
             "final_forecast": forecast,
         },
     }
+
+
+def sealed_then_revealed(question_id, post_id, forecast, *, qtype, options=None, recorded="2026-10-20T00:00:00Z"):
+    """
+    A SYNTHETIC forecast sealed and then revealed by the bot's own code
+    (sealed_ledger.py), so both lines are in the format a live run writes. In
+    the record, each multiple choice option is its index in the question's
+    option order, as text, and option_count says how many options there are.
+    """
+    entry = ledger_entry(
+        question_id=question_id,
+        final_forecast=forecast,
+        context={
+            "post_id": post_id,
+            "url": f"https://www.metaculus.com/questions/{post_id}/",
+            "type": qtype,
+            "option_labels": options,
+        },
+        run_mode="tournament",
+    )
+    entry["recorded_at_utc"] = recorded
+    sealed_forecast = sealed_ledger.seal_entry(entry, FAKE_LEDGER_KEY)
+    revealed = sealed_ledger.reveal_line_for(
+        sealed_forecast.line, sealed_forecast.record, datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    )
+    return sealed_forecast.line, revealed
 
 
 def binary(p):
@@ -453,6 +482,99 @@ class SealedLedgerTests(LearningLoopCase):
         self.run_loop()
         self.assertEqual(self.state()["questions"], {})
         self.assertEqual(self.state()["left_out"], {})
+
+
+class MultipleChoiceKeyTests(LearningLoopCase):
+    """
+    A sealed or revealed record gives each multiple choice option by its index
+    in the question's option order, with option_count; an older full line
+    gives each by its label. Both are scored, from the question's own options.
+    """
+
+    OPTIONS = ["SYNTHETIC OPTION AMBER", "SYNTHETIC OPTION BIRCH", "SYNTHETIC OPTION CEDAR"]
+    FORECAST = {"probability_yes_per_category": dict(zip(OPTIONS, (0.5, 0.3, 0.2)))}
+
+    def test_a_revealed_forecast_keyed_by_option_index_is_scored(self):
+        sealed_line, reveal_line = sealed_then_revealed(
+            880001, 78001, self.FORECAST, qtype="multiple_choice", options=self.OPTIONS
+        )
+        # The bot's own code wrote the record by option index, with option_count.
+        self.assertEqual(
+            reveal_line["record"]["final_forecast"],
+            {"probability_yes_per_category": {"0": 0.5, "1": 0.3, "2": 0.2}},
+        )
+        self.assertEqual(reveal_line["record"]["option_count"], 3)
+        self.write_ledger(sealed_line, reveal_line)
+        # SYNTHETIC: Metaculus reports a different forecast, so the source shows.
+        history = [{"start_time": ts("2026-10-20T00:00:00Z"), "end_time": None, "forecast_values": [0.1, 0.1, 0.8]}]
+        self.api.add(post(78001, question(880001, "multiple_choice", resolution="SYNTHETIC OPTION BIRCH",
+                                          options=self.OPTIONS, history=history)))
+        self.run_loop()
+        record = self.state()["questions"]["880001"]
+        self.assertEqual(record["forecast_source"], "ledger")
+        self.assertEqual(record["outcome_text"], "option 2 of 3")
+        self.assertEqual(record["probability_on_outcome"], 0.3)
+        self.assertEqual(record["forecast_text"], "30% on the outcome")
+        self.assertAlmostEqual(record["log_score"], math.log(0.3))
+        self.assertAlmostEqual(record["above_uniform"], math.log(0.3 * 3))
+        self.assertIsNone(record["score_note"])
+        self.assertIn("| Multiple choice | 1 | n/a | -1.204 | -0.105 |", self.lessons())
+        for label in self.OPTIONS:
+            self.assertNotIn(label, self.written())
+
+    def test_an_older_full_line_keyed_by_option_label_is_still_scored(self):
+        self.write_ledger(line(880002, 78002, self.FORECAST, qtype="multiple_choice"))
+        self.api.add(post(78002, question(880002, "multiple_choice", resolution="SYNTHETIC OPTION CEDAR",
+                                          options=self.OPTIONS)))
+        self.run_loop()
+        record = self.state()["questions"]["880002"]
+        self.assertEqual(record["forecast_source"], "ledger")
+        self.assertEqual(record["outcome_text"], "option 3 of 3")
+        self.assertEqual(record["probability_on_outcome"], 0.2)
+        self.assertEqual(record["forecast_text"], "20% on the outcome")
+        self.assertAlmostEqual(record["log_score"], math.log(0.2))
+        self.assertAlmostEqual(record["above_uniform"], math.log(0.2 * 3))
+        self.assertIsNone(record["score_note"])
+
+    def test_an_outcome_missing_from_the_options_scores_unknown_never_zero(self):
+        self.write_ledger(
+            *sealed_then_revealed(880003, 78003, self.FORECAST, qtype="multiple_choice", options=self.OPTIONS)
+        )
+        # SYNTHETIC: an outcome that is not one of the question's options.
+        self.api.add(post(78003, question(880003, "multiple_choice", resolution="SYNTHETIC OPTION NOT LISTED",
+                                          options=self.OPTIONS)))
+        self.run_loop()
+        state = self.state()
+        record = state["questions"]["880003"]
+        self.assertEqual(record["outcome_text"], "an option not in the question's list")
+        for name in ("probability_on_outcome", "forecast_text", "log_score", "above_uniform"):
+            self.assertEqual(record[name], "Unknown", name)
+        self.assertIsNone(record["brier"])
+        self.assertEqual(record["score_note"], "the outcome is not one of the question's options")
+        # Left out of the means and of the misses: Unknown is never counted as zero.
+        self.assertEqual(state["mornings"]["2026-11-04"]["worst"], [])
+        lessons = self.lessons()
+        self.assertIn("| Multiple choice | 0 | n/a | n/a | n/a |", lessons)
+        self.assertIn("Also reported, with an Unknown score and so left out of these means: 1.", lessons)
+        self.assertIn(
+            "The scores of [Question 880003](https://www.metaculus.com/questions/78003/) are Unknown: "
+            "the outcome is not one of the question's options.",
+            lessons,
+        )
+        self.assertNotIn("SYNTHETIC OPTION NOT LISTED", self.written())
+
+    def test_option_count_not_the_keys_says_a_forecast_is_keyed_by_index(self):
+        # SYNTHETIC labels that look like indices: "2" is the option at index 1.
+        digits = question(1, "multiple_choice", options=["1", "2", "3"])
+        by_index = {"probability_yes_per_category": {"0": 0.6, "1": 0.3, "2": 0.1}}
+        scores = learning_loop.scores_for("multiple_choice", "2", by_index, digits, option_count=3)
+        self.assertEqual(scores["probability_on_outcome"], 0.3)
+        by_label = {"probability_yes_per_category": {"1": 0.6, "2": 0.3, "3": 0.1}}
+        self.assertEqual(learning_loop.scores_for("multiple_choice", "2", by_label, digits)["probability_on_outcome"], 0.3)
+        # An index means nothing without the options the forecast was made over.
+        for changed in (question(2, "multiple_choice", options=["1", "2", "3", "4"]), question(3, "multiple_choice")):
+            with self.assertRaises(learning_loop.ScoreUnknown):
+                learning_loop.scores_for("multiple_choice", "2", by_index, changed, option_count=3)
 
 
 class NoQuestionTextTests(LearningLoopCase):

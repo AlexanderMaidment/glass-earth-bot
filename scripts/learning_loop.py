@@ -256,10 +256,17 @@ def write_atomically(path: Path, text: str) -> None:
 
 @dataclass
 class LedgerForecast:
-    """One forecast in the ledger. Its payload is None while it is still sealed."""
+    """
+    One forecast in the ledger. Its payload is None while it is still sealed.
+    option_count is set when the payload gives each multiple choice option by
+    its 0-based index in the question's option order, as text, as every
+    sealed and revealed record does (sealed_ledger.py); it is None when the
+    options are given by their labels, as in older full lines.
+    """
 
     recorded_at: datetime | None
     payload: dict[str, Any] | None
+    option_count: int | None = None
 
 
 @dataclass
@@ -270,8 +277,14 @@ class LedgerQuestion:
     test_area: bool = False
     first_recorded: datetime | None = None
 
-    def add(self, recorded_at: datetime | None, payload: Any, run_mode: Any) -> None:
-        self.forecasts.append(LedgerForecast(recorded_at, payload if isinstance(payload, dict) else None))
+    def add(self, recorded_at: datetime | None, payload: Any, run_mode: Any, option_count: Any = None) -> None:
+        self.forecasts.append(
+            LedgerForecast(
+                recorded_at,
+                payload if isinstance(payload, dict) else None,
+                option_count if _is_int(option_count) else None,
+            )
+        )
         if run_mode == TEST_AREA_RUN_MODE:
             self.test_area = True
         if recorded_at is not None and (self.first_recorded is None or recorded_at < self.first_recorded):
@@ -318,10 +331,12 @@ def read_ledger(path: Path = LEDGER_PATH) -> dict[int, LedgerQuestion]:
     }
     found: dict[int, LedgerQuestion] = {}
 
-    def add(entry: dict[str, Any], recorded_at: datetime | None, payload: Any, run_mode: Any) -> None:
+    def add(
+        entry: dict[str, Any], recorded_at: datetime | None, payload: Any, run_mode: Any, option_count: Any
+    ) -> None:
         ids = _ids(entry)
         if ids is not None:
-            found.setdefault(ids[0], LedgerQuestion(*ids)).add(recorded_at, payload, run_mode)
+            found.setdefault(ids[0], LedgerQuestion(*ids)).add(recorded_at, payload, run_mode, option_count)
 
     matched: set[str] = set()
     for entry in entries:
@@ -337,13 +352,26 @@ def read_ledger(path: Path = LEDGER_PATH) -> dict[int, LedgerQuestion]:
                 parse_time(entry.get("recorded_at_utc")) or parse_time(record.get("recorded_at_utc")),
                 record.get("final_forecast"),
                 entry.get("run_mode") or record.get("run_mode"),
+                record.get("option_count"),
             )
         else:
-            add(entry, parse_time(entry.get("recorded_at_utc")), entry.get("final_forecast"), entry.get("run_mode"))
+            add(
+                entry,
+                parse_time(entry.get("recorded_at_utc")),
+                entry.get("final_forecast"),
+                entry.get("run_mode"),
+                entry.get("option_count"),
+            )
     # A reveal whose sealed line is missing still names its forecast.
     for seal, record in reveals.items():
         if seal not in matched:
-            add(record, parse_time(record.get("recorded_at_utc")), record.get("final_forecast"), record.get("run_mode"))
+            add(
+                record,
+                parse_time(record.get("recorded_at_utc")),
+                record.get("final_forecast"),
+                record.get("run_mode"),
+                record.get("option_count"),
+            )
     return found
 
 
@@ -733,10 +761,38 @@ def _scaling(question: dict[str, Any]) -> dict[str, Any]:
     return scaling if isinstance(scaling, dict) else {}
 
 
+def option_index(resolution: str, question: dict[str, Any], option_count: int) -> str:
+    """
+    The outcome's key in a multiple choice forecast that gives each option by
+    its 0-based index in the question's option order, as text ("0", "1", ...),
+    as sealed and revealed records do: the place of the resolved label among
+    the question's options, read from the post already fetched (no further
+    request). Unknown unless the outcome is one of those options and the
+    question has the option_count options the forecast was made over.
+    """
+    options = question.get("options")
+    labels = [str(option) for option in options] if isinstance(options, list) else []
+    if resolution not in labels:
+        raise ScoreUnknown("the outcome is not one of the question's options")
+    if len(labels) != option_count:
+        raise ScoreUnknown(f"our forecast gives {option_count} options where the question has {len(labels)}")
+    return str(labels.index(resolution))
+
+
 def scores_for(
-    question_type: str, resolution: str, forecast: Any, question: dict[str, Any]
+    question_type: str,
+    resolution: str,
+    forecast: Any,
+    question: dict[str, Any],
+    *,
+    option_count: int | None = None,
 ) -> dict[str, Any]:
-    """Our scores for one resolved question, from the forecast standing at its close."""
+    """
+    Our scores for one resolved question, from the forecast standing at its
+    close. option_count is set when the forecast gives each multiple choice
+    option by its index (a sealed or revealed record), and None when it gives
+    each by its label (an older full line, or Metaculus's own report).
+    """
     if not isinstance(forecast, dict):
         raise ScoreUnknown("our forecast could not be read")
     if question_type == "binary":
@@ -751,7 +807,8 @@ def scores_for(
         raw = forecast.get("probability_yes_per_category")
         if not isinstance(raw, dict) or not raw:
             raise ScoreUnknown("our forecast has no option probabilities")
-        scores = multiple_choice_scores({str(k): _probability(v) for k, v in raw.items()}, resolution)
+        outcome = resolution if option_count is None else option_index(resolution, question, option_count)
+        scores = multiple_choice_scores({str(k): _probability(v) for k, v in raw.items()}, outcome)
         scores["forecast_text"] = f"{pct(scores['probability_on_outcome'])} on the outcome"
         return scores
     if question_type in CONTINUOUS:
@@ -872,6 +929,7 @@ def resolved_record(
     chosen = ledger_forecast_at_close(ledger_question.forecasts, close)
     if chosen is not None and chosen.payload is not None:
         recorded, payload, source = chosen.recorded_at, chosen.payload, "ledger"
+        option_count = chosen.option_count
     else:
         reported = api_forecast_at_close(question, close)
         if reported is None:
@@ -880,6 +938,7 @@ def resolved_record(
                 return None
             return "no forecast of ours stood at the close"
         (recorded, payload), source = reported, "metaculus"
+        option_count = None  # Metaculus's report gives each option by its label
     question_type = str(question.get("type"))
     record: dict[str, Any] = {
         "question_id": ledger_question.question_id,
@@ -900,7 +959,7 @@ def resolved_record(
         "reported_on": day,
     }
     try:
-        record.update(scores_for(question_type, resolution, payload, question))
+        record.update(scores_for(question_type, resolution, payload, question, option_count=option_count))
     except ScoreUnknown as reason:
         record.update(
             {
