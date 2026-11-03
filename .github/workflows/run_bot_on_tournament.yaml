@@ -5,9 +5,12 @@ on:
   schedule:
     - cron: "7,27,47 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
 
-# Add concurrency group to prevent parallel runs
+# Glass Earth: one group for every workflow that can spend on models, so runs
+# never overlap and each one sees the spending of the runs before it (the
+# daily cap in spend.py reads forecasts/spend.jsonl). A run queued behind
+# another waits; GitHub cancels an older waiting run when a newer one queues.
 concurrency:
-  group: ${{ github.workflow }}
+  group: glass-earth-model-spend
   cancel-in-progress: false
 
 
@@ -35,6 +38,10 @@ jobs:
           version: "0.13.1"
       - name: Install dependencies
         run: uv sync --locked
+      - name: Run the offline tests
+        # No network, no keys, no cost. A failing test stops the run before
+        # any model is called.
+        run: uv run --locked python -m unittest discover -s tests
       - name: Run bot
         run: |
           uv run python main.py
@@ -49,9 +56,16 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
-      - name: Commit the forecast ledger
-        # Runs even if the bot step failed, so forecasts submitted before the
-        # failure are still recorded.
+          # Glass Earth spending: the daily cap in US dollars (default 5.00) and
+          # the part of it kept for high-value questions (default 2.00).
+          GLASS_EARTH_DAILY_CAP_USD: ${{ vars.GLASS_EARTH_DAILY_CAP_USD }}
+          GLASS_EARTH_HIGH_VALUE_RESERVE_USD: ${{ vars.GLASS_EARTH_HIGH_VALUE_RESERVE_USD }}
+          # Market Pulse (re-forecast on a schedule) joins the run only when the
+          # repository variable GLASS_EARTH_MARKET_PULSE is true.
+          GLASS_EARTH_MARKET_PULSE: ${{ vars.GLASS_EARTH_MARKET_PULSE }}
+      - name: Commit the forecast ledger and spend record
+        # Runs even if the bot step failed, so forecasts submitted and money
+        # spent before the failure are still recorded.
         if: always()
         run: |
-          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl
+          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl

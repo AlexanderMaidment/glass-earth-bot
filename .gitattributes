@@ -5,6 +5,7 @@ forecasts/** -text
 # Ledger lines are only ever appended. When two runs append at the same time,
 # keep both sets of lines instead of stopping with a conflict.
 forecasts/ledger.jsonl merge=union
+forecasts/spend.jsonl merge=union
 forecasts/proofs/index.jsonl merge=union
 
 # OpenTimestamps receipts are binary files.
