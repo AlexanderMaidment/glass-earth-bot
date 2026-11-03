@@ -1257,7 +1257,7 @@ class GlassEarthBot(ForecastBot):
 
             Write your reasoning in these steps, in this order:
             1. Reference class and base rate. Choose a reference class, such as past values of this quantity or of similar quantities. Say what the class is and what values were typical in it: a middle value and a range, in words, before you consider anything specific to now. Do not use the "Percentile" format here; keep it for your final answer.
-            2. Current evidence. Cover the outcome if nothing changed, the outcome if the current trend continued, and what experts and markets expect. For each, say whether it moves you up or down from the base rate, and roughly how far.
+            2. Current evidence. Cover the outcome if nothing changed, the outcome if the current trend continued, and what experts and markets expect. For each, say whether it moves you up or down from the base rate, and roughly how far. If the quantity is a figure a company will report for a period (such as revenue or sales), anchor first on the company's own guidance for that period, then on how that company has usually landed against its guidance, and say both before going further.
             3. Time left. Say how long until the outcome is known.
             4. Tails. Briefly describe an unexpected scenario that gives a low outcome and one that gives a high outcome.
             5. Adjusted forecast. Start from the base rate, apply your adjustments, and say how far you moved and why.
