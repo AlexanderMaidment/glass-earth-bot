@@ -256,6 +256,78 @@ class MeterIntegrationTests(OfflineTestCase):
         self.assertEqual(Decimal(skip["worst_case_usd"]), worst)
         self.assertIn("a question needs US$0.2700 to start", skip["reason"])
 
+    # SYNTHETIC reported costs shaped like the measured 3 November question
+    # (observed there: research US$0.0875, forecast US$0.0446).
+    MEASURED_SHAPE = {
+        "openrouter/openai/gpt-6.1-terra:online": "0.0875",
+        "openrouter/anthropic/claude-opus-5.5": "0.0446",
+        "openrouter/openai/gpt-6-luna": "0.0003",
+    }
+
+    def _two_high_value_questions(self):
+        self.metaculus.posts_page = _page_for("fall-futureeval-2026", {90011, 90012})
+        probe = self.make_bot(publish=False, skip=False)
+        return probe.metaculus_client.get_all_open_questions_from_tournament("fall-futureeval-2026")
+
+    def test_a_question_started_with_only_its_reservation_left_finishes(self):
+        import main
+
+        self.models.cost_by_model = dict(self.MEASURED_SHAPE)
+        first, second = self._two_high_value_questions()
+        probe = self.make_bot(publish=False, skip=False)
+        worst = probe._worst_case_question_cost(first, main.DEFAULT_FORECASTER)
+        allowance = worst - Decimal("0.27")
+        self.assertGreater(allowance, Decimal("0.15"))
+        # The cap leaves exactly the first question's reservation (US$0.27).
+        meter = self.make_meter(cap="0.27", reserve="0")
+        bot = self.make_bot(publish=True, skip=False, meter=meter)
+        reports = asyncio.run(bot.forecast_questions([first, second], return_exceptions=True))
+        self.assertEqual(len(reports), 1)
+        self.assertFalse(isinstance(reports[0], BaseException))
+        self.assertEqual([f["question"] for f in self.metaculus.forecasts()], [first.id_of_question])
+
+        records = self.read_jsonl("forecasts/spend.jsonl")
+        calls = [r for r in records if r["event"] == "model_call"]
+        self.assertFalse([r for r in records if r["event"] == "call_refused"])
+        # After research and summary, the forecast's worst case no longer fit
+        # under the cap: without the allowance it would have been refused.
+        [forecast] = [r for r in calls if r["purpose"] == "forecaster"]
+        before = sum(Decimal(r["cap_basis_usd"]) for r in calls[: calls.index(forecast)])
+        self.assertGreater(before + Decimal(forecast["worst_case_usd"]), Decimal("0.27"))
+        self.assertEqual(forecast["over_cap_allowance_usd"], spend.money_text(allowance))
+        # Calls that fitted under the cap are not marked.
+        research = [r for r in calls if r["purpose"] == "researcher"][0]
+        self.assertNotIn("over_cap_allowance_usd", research)
+        # Bounded by the cap plus the allowance, and the next question did not
+        # start once the first had used the room.
+        self.assertLessEqual(meter.spent_today, Decimal("0.27") + allowance)
+        skips = [r for r in records if r["event"] == "question_skipped"]
+        self.assertEqual([s["question_id"] for s in skips], [second.id_of_question])
+        # Reset: outside a question, a forecast call that would have fitted
+        # under the allowance is refused.
+        self.assertEqual(meter.over_cap_allowance, Decimal("0"))
+        llm = bot.get_llm("forecaster_default", "llm")
+        with self.assertRaises(SpendCapReached):
+            asyncio.run(llm.invoke("SYNTHETIC prompt: You are a professional forecaster."))
+
+    def test_the_allowance_does_not_let_a_question_go_further_past_the_cap(self):
+        # SYNTHETIC: a research call reported at US$0.30, more than its own
+        # worst case, leaves too little even under the allowance, so the
+        # forecast is refused rather than take the day further past the cap.
+        self.models.cost_by_model = dict(self.MEASURED_SHAPE, **{"openrouter/openai/gpt-6.1-terra:online": "0.30"})
+        first, _ = self._two_high_value_questions()
+        meter = self.make_meter(cap="0.27", reserve="0")
+        bot = self.make_bot(publish=True, skip=False, meter=meter)
+        [report] = asyncio.run(bot.forecast_questions([first], return_exceptions=True))
+        self.assertIsInstance(report, BaseException)
+        self.assertEqual(self.metaculus.forecasts(), [])
+        records = self.read_jsonl("forecasts/spend.jsonl")
+        refused = [r for r in records if r["event"] == "call_refused"]
+        self.assertTrue(refused)
+        self.assertEqual({r["purpose"] for r in refused}, {"forecaster"})
+        self.assertFalse([r for r in records if r["event"] == "model_call" and r["purpose"] == "forecaster"])
+        self.assertEqual(meter.over_cap_allowance, Decimal("0"))
+
     def test_the_reservation_scales_with_the_forecasts_a_question_takes(self):
         from forecasting_tools import BinaryQuestion, ConditionalQuestion
 

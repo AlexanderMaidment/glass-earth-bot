@@ -813,9 +813,11 @@ class GlassEarthBot(ForecastBot):
         The most forecasting this question could cost: every call at its
         output limit, every retry used, and one forecast (with its parsing)
         per member of the ensemble. Calculated from MODEL_PRICES. The cap
-        check before a Fable question counts it; for an Opus question the
-        check counts the reservation (_question_reservation), and this is
-        recorded for information.
+        check before a Fable question counts it. For an Opus question the
+        check counts the reservation (_question_reservation) instead; this
+        then sets how far past the cap the question may go once it has
+        started (worst case minus reservation), and is recorded for
+        information when the question is skipped.
         """
         question_tokens = estimate_tokens(
             self._get_research_prompt(question, self.get_llm("researcher"))
@@ -881,7 +883,10 @@ class GlassEarthBot(ForecastBot):
         cap check, so that no question starts unless what it needs to start
         (its route's reservation) fits in what is left of today's cap. A
         question that does not fit is skipped and logged (in the run log and
-        forecasts/spend.jsonl), not failed.
+        forecasts/spend.jsonl), not failed. A question that has started may
+        finish past the cap by up to its calculated worst case minus its
+        reservation (SpendMeter.question_running), so that its forecast is
+        not refused after its research is paid for.
 
         ForecastBot's own version starts every question at once (its
         _max_concurrent_questions limits only research calls). Here the
@@ -895,7 +900,8 @@ class GlassEarthBot(ForecastBot):
                 route = self._route_for(question)
                 tag = _question_tag(question)
                 # The calculated worst case with the route's model (Opus for
-                # a skip), recorded for information.
+                # a skip): recorded for a skip, and it sets how far past the
+                # cap a question that starts may go.
                 worst_case = self._worst_case_question_cost(
                     question, route.model or DEFAULT_FORECASTER
                 )
@@ -917,9 +923,12 @@ class GlassEarthBot(ForecastBot):
                     current_question.set(tag),
                 )
                 try:
-                    reports.append(
-                        await self._run_individual_question_with_error_propagation(question)
-                    )
+                    with self.meter.question_running(
+                        reservation=route.reserved_usd, worst_case=worst_case
+                    ):
+                        reports.append(
+                            await self._run_individual_question_with_error_propagation(question)
+                        )
                 except Exception as e:
                     if not return_exceptions:
                         raise

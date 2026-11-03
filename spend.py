@@ -3,7 +3,10 @@ Spending controls for glass-earth-bot.
 
 Every model call is metered: its cost is recorded against the question it was
 made for, and a hard daily cap stops the bot before a call could take the
-day's spending over the cap. All money here is Decimal, in US dollars.
+day's spending over the cap. The one exception is a question already started:
+it may finish past the cap by up to its calculated worst case minus its
+reservation (SpendMeter.question_running). All money here is Decimal, in US
+dollars.
 
 How a cost is known, in order of preference:
 - "openrouter_reported": the cost OpenRouter returns with the response
@@ -71,7 +74,9 @@ QUESTION_RESERVATION_ENV = "GLASS_EARTH_QUESTION_RESERVATION_USD"
 MEASURED_QUESTION_COST_USD = Decimal("0.13286552")
 # What a question with one Opus forecast needs left of the cap before it
 # starts: twice the measured cost, rounded up to the cent (calculated:
-# US$0.27). main.py multiplies it by the forecasts a question takes.
+# US$0.27). main.py multiplies it by the forecasts a question takes. A
+# question can cost more than its reservation; once it has started,
+# SpendMeter.question_running lets it finish.
 QUESTION_RESERVATION_USD = (2 * MEASURED_QUESTION_COST_USD).quantize(
     Decimal("0.01"), rounding=ROUND_CEILING
 )
@@ -475,6 +480,9 @@ class Reservation:
     model: str
     purpose: str
     tag: QuestionTag | None
+    # Above zero when the call fitted only under the allowance of the
+    # question it was made for (see SpendMeter.question_running).
+    over_cap_allowance: Decimal = ZERO
 
 
 @dataclass
@@ -531,6 +539,10 @@ class SpendMeter:
         self.by_question: dict[int | None, QuestionCost] = {}
         self.skips: list[dict[str, Any]] = []
         self._batch_running = False
+        # How far past the cap the question now running may go; zero when
+        # no question is running.
+        self.over_cap_allowance = ZERO
+        self._question_running = False
 
     # ------------------------------------------------------------ reading
 
@@ -605,21 +617,71 @@ class SpendMeter:
         finally:
             self._batch_running = False
 
+    @contextmanager
+    def question_running(self, *, reservation: Decimal, worst_case: Decimal) -> Iterator[Decimal]:
+        """
+        Held while a question that the route let start is forecast; yields
+        the question's allowance.
+
+        A question starts when its reservation fits in what is left of the
+        cap, and the reservation can be less than the question's calculated
+        worst case. A question started near the cap could then have a later
+        call refused (its forecast, after its research is paid for). So while
+        it runs, its calls may take the day's spending up to the cap plus
+        max(0, worst_case - reservation). When it ends, the allowance is gone:
+        a call outside a question is checked against the cap alone, and no
+        new question can start once the cap is passed.
+        """
+        for amount in (reservation, worst_case):
+            if not isinstance(amount, Decimal):
+                raise TypeError("Money must be Decimal")
+        if self._question_running:
+            raise RuntimeError("Questions run one at a time against the daily cap")
+        self._question_running = True
+        self.over_cap_allowance = max(ZERO, worst_case - reservation)
+        try:
+            yield self.over_cap_allowance
+        finally:
+            self.over_cap_allowance = ZERO
+            self._question_running = False
+
     # ------------------------------------------------------------ calls
 
-    def ensure_affordable(self, amount: Decimal, model: str, purpose: str) -> None:
-        if not self.can_afford(amount):
-            self._record_refusal(amount, model, purpose)
-            raise SpendCapReached(
-                f"Refused a {purpose} call to {price_key(model)}: it could cost up to "
-                f"US${money_display(amount)}, and US${money_display(self.spent_today)} of the "
-                f"US${money_display(self.cap)} daily cap is already spent."
-            )
+    def ensure_affordable(self, amount: Decimal, model: str, purpose: str) -> Decimal:
+        """
+        Refuses (SpendCapReached) a call whose worst case could take the day's
+        spending past the cap or, while a question runs, past the cap plus
+        that question's allowance. Returns the allowance a call needed: zero
+        for a call that fits within the cap.
+        """
+        if self.can_afford(amount):
+            return ZERO
+        allowance = self.over_cap_allowance
+        if allowance > ZERO and self.spent_today + self.in_flight + amount <= self.cap + allowance:
+            return allowance
+        self._record_refusal(amount, model, purpose)
+        past = (
+            f" This question may go up to US${money_display(allowance)} past the cap, "
+            "and this call could go further."
+            if allowance > ZERO
+            else ""
+        )
+        raise SpendCapReached(
+            f"Refused a {purpose} call to {price_key(model)}: it could cost up to "
+            f"US${money_display(amount)}, and US${money_display(self.spent_today)} of the "
+            f"US${money_display(self.cap)} daily cap is already spent.{past}"
+        )
 
     def reserve_call(self, amount: Decimal, model: str, purpose: str) -> Reservation:
-        self.ensure_affordable(amount, model, purpose)
+        allowance = self.ensure_affordable(amount, model, purpose)
         self.in_flight += amount
-        return Reservation(amount=amount, model=model, purpose=purpose, tag=current_question.get())
+        return Reservation(
+            amount=amount,
+            model=model,
+            purpose=purpose,
+            tag=current_question.get(),
+            over_cap_allowance=allowance,
+        )
 
     def settle(self, reservation: Reservation, usage: CallUsage) -> Decimal | None:
         cost, source = cost_of_call(reservation.model, usage)
@@ -658,24 +720,26 @@ class SpendMeter:
         else:
             totals.known += cost
             totals.by_model[key] = totals.by_model.get(key, ZERO) + cost
-        self._append(
-            {
-                "event": "model_call",
-                "question_id": question_id,
-                "post_id": tag.post_id if tag else None,
-                "purpose": reservation.purpose,
-                "model": key,
-                "web_search": is_web_search_model(reservation.model),
-                "outcome": outcome,
-                "prompt_tokens": usage.prompt_tokens,
-                "completion_tokens": usage.completion_tokens,
-                "cached_prompt_tokens": usage.cached_prompt_tokens,
-                "cost_usd": money_text(cost) if cost is not None else UNKNOWN,
-                "cost_source": source,
-                "worst_case_usd": money_text(reservation.amount),
-                "cap_basis_usd": money_text(cap_basis),
-            }
-        )
+        record: dict[str, Any] = {
+            "event": "model_call",
+            "question_id": question_id,
+            "post_id": tag.post_id if tag else None,
+            "purpose": reservation.purpose,
+            "model": key,
+            "web_search": is_web_search_model(reservation.model),
+            "outcome": outcome,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "cached_prompt_tokens": usage.cached_prompt_tokens,
+            "cost_usd": money_text(cost) if cost is not None else UNKNOWN,
+            "cost_source": source,
+            "worst_case_usd": money_text(reservation.amount),
+            "cap_basis_usd": money_text(cap_basis),
+        }
+        if reservation.over_cap_allowance > ZERO:
+            # The call fitted only under its question's allowance past the cap.
+            record["over_cap_allowance_usd"] = money_text(reservation.over_cap_allowance)
+        self._append(record)
 
     def _record_refusal(self, amount: Decimal, model: str, purpose: str) -> None:
         tag = current_question.get()

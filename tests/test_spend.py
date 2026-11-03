@@ -294,6 +294,73 @@ class MeterTests(unittest.TestCase):
         self.now = datetime(2026, 11, 4, 0, 1, tzinfo=timezone.utc)
         self.assertTrue(meter.can_afford(Decimal("0.2")))
 
+    def test_a_started_question_may_finish_past_the_cap_by_its_allowance(self):
+        meter = self.meter("1.00")
+        opus = "openrouter/anthropic/claude-opus-5.5"
+        # SYNTHETIC: US$0.80 of the US$1.00 cap is already spent today.
+        meter.settle(meter.reserve_call(Decimal("0.80"), opus, "researcher"), CallUsage(10, 10, None, Decimal("0.80")))
+        # Outside a question, a call that could pass the cap is refused.
+        with self.assertRaises(SpendCapReached):
+            meter.reserve_call(Decimal("0.25"), opus, "forecaster")
+        # A question reserved at US$0.27 whose calculated worst case is
+        # US$0.46 may go up to US$0.19 past the cap while it runs.
+        with meter.question_running(reservation=Decimal("0.27"), worst_case=Decimal("0.46")) as allowance:
+            self.assertEqual(allowance, Decimal("0.19"))
+            # A call within the cap does not need the allowance.
+            within = meter.reserve_call(Decimal("0.10"), opus, "summarizer")
+            self.assertEqual(within.over_cap_allowance, Decimal("0"))
+            meter.settle(within, CallUsage(10, 10, None, Decimal("0.10")))
+            # 0.90 spent + 0.25 = 1.15: past the cap, within cap + allowance.
+            past = meter.reserve_call(Decimal("0.25"), opus, "forecaster")
+            self.assertEqual(past.over_cap_allowance, Decimal("0.19"))
+            # Bounded: 0.90 spent + 0.25 in flight + 0.05 = 1.20, over 1.19.
+            with self.assertRaises(SpendCapReached) as caught:
+                meter.reserve_call(Decimal("0.05"), opus, "parser")
+            self.assertIn("may go up to US$0.1900 past the cap", str(caught.exception))
+            meter.settle(past, CallUsage(10, 10, None, Decimal("0.20")))
+            # 1.10 spent + 0.09 = 1.19: exactly cap + allowance still fits.
+            meter.settle(meter.reserve_call(Decimal("0.09"), opus, "parser"), CallUsage(10, 10, None, Decimal("0.01")))
+        # Reset when the question ends: the cap alone again.
+        self.assertEqual(meter.over_cap_allowance, Decimal("0"))
+        with self.assertRaises(SpendCapReached):
+            meter.reserve_call(Decimal("0.01"), opus, "parser")
+        self.assertEqual(meter.spent_today, Decimal("1.11"))
+        self.assertLessEqual(meter.spent_today, Decimal("1.19"))
+        records = [json.loads(l) for l in self.path.read_text(encoding="utf-8").splitlines()]
+        calls = [r for r in records if r["event"] == "model_call"]
+        # Only the calls that needed the allowance are marked with it.
+        self.assertEqual(
+            [r.get("over_cap_allowance_usd") for r in calls], [None, None, "0.19", "0.19"]
+        )
+        self.assertEqual(len([r for r in records if r["event"] == "call_refused"]), 3)
+
+    def test_the_allowance_is_never_negative_and_ends_with_the_question(self):
+        meter = self.meter("1.00")
+        opus = "openrouter/anthropic/claude-opus-5.5"
+        meter.settle(meter.reserve_call(Decimal("0.90"), opus, "researcher"), CallUsage(10, 10, None, Decimal("0.90")))
+        # A reservation at or above the worst case (Fable's) gives no allowance.
+        with meter.question_running(reservation=Decimal("0.82"), worst_case=Decimal("0.82")) as allowance:
+            self.assertEqual(allowance, Decimal("0"))
+            with self.assertRaises(SpendCapReached):
+                meter.reserve_call(Decimal("0.20"), opus, "forecaster")
+        with meter.question_running(reservation=Decimal("0.50"), worst_case=Decimal("0.46")) as allowance:
+            self.assertEqual(allowance, Decimal("0"))
+        # It ends even when the question fails.
+        with self.assertRaises(RuntimeError):
+            with meter.question_running(reservation=Decimal("0.27"), worst_case=Decimal("0.46")):
+                self.assertEqual(meter.over_cap_allowance, Decimal("0.19"))
+                raise RuntimeError("SYNTHETIC failure inside a question")
+        self.assertEqual(meter.over_cap_allowance, Decimal("0"))
+        # One question at a time, and money must be Decimal.
+        with meter.question_running(reservation=Decimal("0.27"), worst_case=Decimal("0.46")):
+            with self.assertRaises(RuntimeError):
+                with meter.question_running(reservation=Decimal("0.27"), worst_case=Decimal("0.46")):
+                    pass
+            self.assertEqual(meter.over_cap_allowance, Decimal("0.19"))
+        with self.assertRaises(TypeError):
+            with meter.question_running(reservation=0.27, worst_case=Decimal("0.46")):
+                pass
+
     def test_spend_log_location(self):
         self.assertEqual(spend.spend_log_paths(True), (spend.SPEND_LOG_PATH, [spend.SPEND_LOG_PATH]))
         log, reads = spend.spend_log_paths(False)
