@@ -80,9 +80,9 @@ it never starts a call that could take the day's spending over the **daily
 cap** (default **US$5.00** per UTC day). Before each question it checks that
 the question's worst case fits; if not, it skips the question and logs why,
 instead of failing halfway. Low-value questions do not spend into the last
-US$2.00 of the cap, which is kept for high-value questions, and Fable is used
-only while the cap still has room for a Fable question plus one more default
-question.
+US$2.00 of the cap (or 40% of a cap under US$5), which is kept for high-value
+questions, and Fable is used only while the cap still has room for a Fable
+question plus one more default question.
 
 The cost of each call comes from OpenRouter's own report on the response
 where it gives one, otherwise from the token counts times the list price. A
@@ -157,7 +157,7 @@ Optional repository variables:
 
 - `GLASS_EARTH_DAILY_CAP_USD`: the daily cap in US dollars (default `5.00`).
 - `GLASS_EARTH_HIGH_VALUE_RESERVE_USD`: the part of the cap kept for
-  high-value questions (default `2.00`).
+  high-value questions (default `2.00`, or 40% of a cap under US$5).
 - `GLASS_EARTH_MARKET_PULSE`: `true` adds Market Pulse to each tournament run.
   Market Pulse allows one entry per person, so decide first whether to enter
   as the bot.
@@ -190,7 +190,8 @@ uv run --locked python main.py --mode test_questions --dry-run --max-questions 1
 would have written and its spending in `forecasts/dry_run/`, which git also
 ignores. `--max-questions N` limits each target to N questions,
 `--question-url URL` forecasts one question (dry runs only), and
-`--daily-cap-usd X` sets the cap for that run. To keep the Python environment
+`--daily-cap-usd X` and `--high-value-reserve-usd Y` set the cap and reserve
+for that run. To keep the Python environment
 out of a synced folder such as OneDrive, set `UV_PROJECT_ENVIRONMENT` to a
 folder elsewhere first.
 

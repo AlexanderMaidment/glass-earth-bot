@@ -67,8 +67,11 @@ class CapEnvTests(unittest.TestCase):
         os.environ.pop(spend.CAP_ENV, None)
         self.assertEqual(spend.daily_cap_from_env(), (Decimal("5.00"), Decimal("2.00")))
         self.assertEqual(spend.daily_cap_from_env("1.50")[0], Decimal("1.50"))
-        # The reserve can never exceed the cap.
-        self.assertEqual(spend.daily_cap_from_env("1.50")[1], Decimal("1.50"))
+        # Unless set, a smaller cap keeps 40% of itself as the reserve.
+        self.assertEqual(spend.daily_cap_from_env("1.50")[1], Decimal("0.600"))
+        self.assertEqual(spend.daily_cap_from_env("2.00", "0"), (Decimal("2.00"), Decimal("0")))
+        # A set reserve can never exceed the cap.
+        self.assertEqual(spend.daily_cap_from_env("1.50", "9")[1], Decimal("1.50"))
         with self.assertRaises(ValueError):
             spend.daily_cap_from_env("-1")
 

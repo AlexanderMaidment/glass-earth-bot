@@ -1550,6 +1550,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="The daily spend cap in US dollars for this run (default: GLASS_EARTH_DAILY_CAP_USD, else 5.00)",
     )
+    parser.add_argument(
+        "--high-value-reserve-usd",
+        type=str,
+        default=None,
+        help=(
+            "The part of the cap low-value questions may not use (default: "
+            "GLASS_EARTH_HIGH_VALUE_RESERVE_USD, else US$2.00 or 40%% of the cap, whichever is less)"
+        ),
+    )
     return parser
 
 
@@ -1574,7 +1583,7 @@ def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseExceptio
     publish_to_metaculus = not args.dry_run
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    cap, reserve = daily_cap_from_env(args.daily_cap_usd)
+    cap, reserve = daily_cap_from_env(args.daily_cap_usd, args.high_value_reserve_usd)
     log_path, read_paths = spend_log_paths()
     meter = SpendMeter(
         cap=cap,

@@ -44,7 +44,10 @@ SPEND_VERSION = 1
 DEFAULT_DAILY_CAP_USD = Decimal("5.00")
 # Low-value questions (for example MiniBench) may not spend into the last part
 # of the cap, so that a high-value question later in the day can still run.
+# Unless set, the reserve is US$2.00 or 40% of the cap, whichever is less, so
+# a smaller cap still leaves room for low-value questions.
 DEFAULT_HIGH_VALUE_RESERVE_USD = Decimal("2.00")
+DEFAULT_RESERVE_SHARE = Decimal("0.4")
 
 CAP_ENV = "GLASS_EARTH_DAILY_CAP_USD"
 RESERVE_ENV = "GLASS_EARTH_HIGH_VALUE_RESERVE_USD"
@@ -274,14 +277,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def daily_cap_from_env(override: str | None = None) -> tuple[Decimal, Decimal]:
+def daily_cap_from_env(
+    override: str | None = None, reserve_override: str | None = None
+) -> tuple[Decimal, Decimal]:
     """(cap, reserve) from the command line, the environment, or the defaults."""
     raw_cap = override if override is not None else os.getenv(CAP_ENV)
-    raw_reserve = os.getenv(RESERVE_ENV)
+    raw_reserve = reserve_override if reserve_override is not None else os.getenv(RESERVE_ENV)
     cap = DEFAULT_DAILY_CAP_USD if not raw_cap else to_decimal(raw_cap.strip())
-    reserve = (
-        DEFAULT_HIGH_VALUE_RESERVE_USD if not raw_reserve else to_decimal(raw_reserve.strip())
-    )
+    if raw_reserve:
+        reserve = to_decimal(raw_reserve.strip())
+    else:
+        reserve = min(DEFAULT_HIGH_VALUE_RESERVE_USD, cap * DEFAULT_RESERVE_SHARE)
     if cap < ZERO:
         raise ValueError("The daily cap cannot be negative")
     if reserve < ZERO:
