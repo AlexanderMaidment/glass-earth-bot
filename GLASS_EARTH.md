@@ -219,6 +219,55 @@ The models, token limits and worst-case assumptions are set at the top of
 `main.py`; the prices and the reservation are in `spend.py`, and the credit
 check is in `credit.py`.
 
+## Learning loop
+
+Every morning at 07:00 in Brisbane (21:00 UTC), the **Learning loop**
+workflow runs `scripts/learning_loop.py`. It learns from resolved questions
+only, never from the bot's forecasts on open questions.
+
+1. It takes the list of questions the bot has forecast from the ledger,
+   leaving out the unscored bot testing area. While a question is open its
+   ledger line is sealed, and the loop never opens the seal.
+2. It asks Metaculus about each question not reported before: read-only, one
+   request every 4 seconds, at most 200 a morning, never retried. A 429 (too
+   many requests) or any refusal stops the requests for that morning; the
+   rest wait for the next.
+3. It keeps only questions that have resolved, leaving out annulled and
+   ambiguous ones, and reports each one once. For each it records our last
+   forecast before the question closed (from the ledger's reveal line, or as
+   Metaculus reports our forecast if the ledger has not revealed it yet), the
+   outcome, our own scores, and Metaculus's own baseline and peer scores when
+   the API gives them (otherwise Unknown). Our scores: Brier and log score
+   for yes/no questions, the log score of the outcome for multiple choice,
+   and for numeric, discrete and date questions the log score of the
+   probability our distribution put in the outcome's bin, or beyond the bound.
+4. The three worst misses of the morning each get a one-line cause from the
+   bot's cheap helper model, `openai/gpt-6-luna`, through the same metered
+   path as every other model call, so the daily cap counts it and
+   `forecasts/spend.jsonl` records it. Without a model, or if the cause
+   repeats the question's words, it reads "Unknown (not reviewed)".
+
+The results go to `LESSONS.md`: the rules, a calibration table rewritten each
+run, and one section per morning, newest first. A morning with nothing
+resolved says so in one line. `forecasts/learning_state.json` remembers what
+has been reported, so nothing is reported twice. Nothing about an open
+question is written to either file. Metaculus's terms of use do not allow
+republishing its site material, so neither file holds a question's title,
+text or option labels: questions are named by ID and link.
+
+The loop never changes the bot. The bot changes at most once a week, and
+only after a change beats the old version on closed questions, with research
+search capped at each question's close date. Until such a search exists
+(AskNews is the planned one), no change is made because of a lesson.
+
+It runs only while `GLASS_EARTH_LIVE` is `true`, in the same queue as the
+forecasting workflows, after the offline tests, with the two secrets and the
+cap variables they use. The reviews leave the high-value reserve free. A
+morning costs about US$0.001 (calculated from an assumption: three calls of
+about 2,000 tokens in and 300 out at US$0.10 and US$0.50 per million tokens)
+and at most US$0.0071 (calculated: three calls at their limits). The
+Metaculus requests are free.
+
 ## Setup
 
 ### 1. Add the three secrets

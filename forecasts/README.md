@@ -197,6 +197,15 @@ a UTC day. The file appears after the first such day.
 | `warn_below_usd` | The warning level (`5.00`). |
 | `run_mode`, `code_commit`, `run_url` | The run that failed on purpose. |
 
+## learning_state.json
+
+What the daily learning loop (`scripts/learning_loop.py`) has reported in
+`LESSONS.md`: each resolved question with its scores and cause, the resolved
+questions it left out (annulled, ambiguous, or in the bot testing area) and
+what each morning reported, so nothing is reported twice. It holds nothing
+about an open question, and no question title, text or option label:
+questions are named by their IDs. `LESSONS.md` is rendered from it each run.
+
 ## proofs/
 
 Once a day, a workflow stamps the ledger with
