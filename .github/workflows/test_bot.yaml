@@ -27,6 +27,11 @@ jobs:
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # The branch's latest commit, not the one this run was queued at: a run queued
+          # behind another must see that run's ledger and spend record, or the daily
+          # cap would count too little.
+          ref: ${{ github.ref_name }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
