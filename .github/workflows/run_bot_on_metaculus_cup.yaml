@@ -56,6 +56,9 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          # Glass Earth: seals each forecast in the public ledger until its
+          # question closes (sealed_ledger.py). A live run stops without it.
+          GLASS_EARTH_LEDGER_KEY: ${{ secrets.GLASS_EARTH_LEDGER_KEY }}
           # Glass Earth spending: the daily cap in US dollars (default 2.00),
           # the last UTC day that cap applies (YYYY-MM-DD; after it the cap is
           # 2.00 again; unset for no end date), and the part of the cap kept
@@ -78,4 +81,4 @@ jobs:
         # purpose to warn of low OpenRouter credit.
         if: always()
         run: |
-          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/spend.jsonl forecasts/credit_warnings.jsonl
+          bash scripts/commit_and_push.sh "Ledger: forecasts submitted in run ${{ github.run_id }}" forecasts/ledger.jsonl forecasts/sealed_boxes.jsonl forecasts/spend.jsonl forecasts/credit_warnings.jsonl

@@ -4,6 +4,7 @@ fake runner standing in for git, gh and the dry run, and a fake OpenRouter
 key check. Nothing is set, pushed, run or fetched for real.
 """
 
+import base64
 import importlib.util
 import json
 import os
@@ -25,6 +26,8 @@ SPEC.loader.exec_module(go_live)
 
 TOKEN = "synthetic-metaculus-token-0001"
 KEY = "sk-or-synthetic-key-0002"
+LEDGER_KEY = base64.urlsafe_b64encode(b"SYNTHETIC-go-live-ledger-key-32b").decode("ascii")
+ENV_FILE = f"METACULUS_TOKEN={TOKEN}\nOPENROUTER_API_KEY={KEY}\nGLASS_EARTH_LEDGER_KEY={LEDGER_KEY}\n"
 
 
 def done(returncode=0, stdout="", stderr=""):
@@ -75,6 +78,9 @@ class FakeRunner:
     def dry_run(self, kwargs):
         env = kwargs["env"]
         assert env["METACULUS_TOKEN"] == TOKEN and env["OPENROUTER_API_KEY"] == KEY
+        # A dry run seals nothing, so it never gets the ledger key.
+        assert "GLASS_EARTH_LEDGER_KEY" not in env
+        assert LEDGER_KEY not in env.values()
         # The child must write UTF-8, or the bot's emoji banner stops it on Windows.
         assert env["PYTHONIOENCODING"] == "utf-8" and kwargs["encoding"] == "utf-8"
         if not self.options["dry_run_ok"]:
@@ -109,9 +115,7 @@ class GoLiveTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name)
-        (self.repo / ".env").write_text(
-            f"METACULUS_TOKEN={TOKEN}\nOPENROUTER_API_KEY={KEY}\n", encoding="utf-8"
-        )
+        (self.repo / ".env").write_text(ENV_FILE, encoding="utf-8")
         self.printed = []
         self.answers = []
         self.key_checks = []
@@ -138,22 +142,27 @@ class GoLiveTests(unittest.TestCase):
 
     def assert_no_secret_shown(self, runner):
         text = self.everything_printed()
-        self.assertNotIn(TOKEN, text)
-        self.assertNotIn(KEY, text)
-        for args, _ in runner.calls:
-            self.assertNotIn(TOKEN, " ".join(args))
-            self.assertNotIn(KEY, " ".join(args))
         log = self.repo / "forecasts" / "dry_run" / "go_live_dry_run.log"
-        if log.exists():
-            self.assertNotIn(TOKEN, log.read_text(encoding="utf-8"))
-            self.assertNotIn(KEY, log.read_text(encoding="utf-8"))
+        for secret in (TOKEN, KEY, LEDGER_KEY, LEDGER_KEY.rstrip("=")):
+            self.assertNotIn(secret, text)
+            for args, _ in runner.calls:
+                self.assertNotIn(secret, " ".join(args))
+            if log.exists():
+                self.assertNotIn(secret, log.read_text(encoding="utf-8"))
 
     def test_step_one_sets_secrets_on_stdin_runs_one_dry_run_and_stops(self):
         runner = FakeRunner(self.repo)
         self.assertEqual(self.go([], runner), 0)
         secret_calls = [(a, k) for a, k in runner.calls if a[:3] == ["gh", "secret", "set"]]
-        self.assertEqual([a[3] for a, _ in secret_calls], ["METACULUS_TOKEN", "OPENROUTER_API_KEY"])
-        self.assertEqual([k["input"] for _, k in secret_calls], [TOKEN, KEY])
+        self.assertEqual(
+            [a[3] for a, _ in secret_calls],
+            ["METACULUS_TOKEN", "OPENROUTER_API_KEY", "GLASS_EARTH_LEDGER_KEY"],
+        )
+        self.assertEqual([k["input"] for _, k in secret_calls], [TOKEN, KEY, LEDGER_KEY])
+        self.assertIn(
+            "Read METACULUS_TOKEN, OPENROUTER_API_KEY and GLASS_EARTH_LEDGER_KEY from .env (values not shown).",
+            self.printed,
+        )
         for args, _ in secret_calls:
             self.assertEqual(args[4:], ["--repo", "AlexanderMaidment/glass-earth-bot"])
         dry = [a for a in runner.commands() if len(a) > 1 and a[1] == "main.py"]
@@ -181,6 +190,31 @@ class GoLiveTests(unittest.TestCase):
         self.assertEqual(self.go([], runner), 1)
         self.assertFalse(any(a[:2] == ["gh", "secret"] for a in runner.commands()))
         self.assertIn("placeholder", self.everything_printed())
+
+    def test_a_missing_or_unusable_ledger_key_stops_before_anything_is_set(self):
+        short = base64.urlsafe_b64encode(bytes(16)).decode("ascii")
+        for value, said in (
+            (None, "empty or still a placeholder"),
+            ("", "empty or still a placeholder"),
+            (short, "decodes to 16 bytes"),
+            (base64.b64encode(bytes([0xFB, 0xFF] * 16)).decode("ascii"), "not URL-safe base64"),
+            ("SYNTHETIC-not-a-key", "decodes to"),
+        ):
+            env = ENV_FILE.replace(f"GLASS_EARTH_LEDGER_KEY={LEDGER_KEY}\n", "")
+            if value is not None:
+                env += f"GLASS_EARTH_LEDGER_KEY={value}\n"
+            (self.repo / ".env").write_text(env, encoding="utf-8")
+            self.printed.clear()
+            runner = FakeRunner(self.repo)
+            self.assertEqual(self.go([], runner), 1)
+            self.assertFalse(any(a[:2] == ["gh", "secret"] for a in runner.commands()))
+            self.assertFalse(any(len(a) > 1 and a[1] == "main.py" for a in runner.commands()))
+            text = self.everything_printed()
+            self.assertIn("GLASS_EARTH_LEDGER_KEY", text)
+            self.assertIn(said, text)
+            if value:
+                self.assertNotIn(value, text)
+            self.assertFalse((self.repo / go_live.MARKER).exists())
 
     def test_missing_env_file_stops(self):
         (self.repo / ".env").unlink()

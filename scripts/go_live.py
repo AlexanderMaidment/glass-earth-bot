@@ -5,13 +5,16 @@ Step 1 (run when .env is ready):
     uv run --locked python scripts/go_live.py
 
   1. Checks that .env exists, is ignored by git and holds real values for
-     METACULUS_TOKEN and OPENROUTER_API_KEY.
-  2. Sets both as GitHub Actions secrets with `gh secret set`, passing each
-     value on standard input. No value is ever printed, logged or put on a
-     command line.
+     METACULUS_TOKEN, OPENROUTER_API_KEY and GLASS_EARTH_LEDGER_KEY (the key
+     that seals each forecast in the public ledger until its question
+     closes: URL-safe base64 of 32 random bytes; see forecasts/README.md).
+  2. Sets all three as GitHub Actions secrets with `gh secret set`, passing
+     each value on standard input. No value is ever printed, logged or put on
+     a command line.
   3. Asks OpenRouter how much credit the key has left (a free call).
   4. Runs one paid dry run on this computer: one question from the bot
-     testing area, under a US$2.00 cap, posting nothing to Metaculus.
+     testing area, under a US$2.00 cap, posting nothing to Metaculus. A dry
+     run seals nothing, so it is not given the ledger key.
   5. Prints that forecast, its comment and its cost, then stops.
 
 Step 2 (only after you have read the dry run and said yes):
@@ -39,9 +42,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from sealed_ledger import KEY_ENV, LedgerKeyError, parse_ledger_key  # noqa: E402
+
 REPOSITORY = "AlexanderMaidment/glass-earth-bot"
 BRANCH = "engine-one-ready"
-SECRET_NAMES = ("METACULUS_TOKEN", "OPENROUTER_API_KEY")
+SECRET_NAMES = ("METACULUS_TOKEN", "OPENROUTER_API_KEY", KEY_ENV)
+# What the dry run is given: it seals nothing, so never the ledger key.
+DRY_RUN_SECRET_NAMES = ("METACULUS_TOKEN", "OPENROUTER_API_KEY")
 PLACEHOLDERS = {"", "1234567890", "REPLACE_ME", "your-token-here", "your-api-key-here"}
 # One test-area question cost US$0.13286552 in the 3 November 2026 dry run
 # (observed: OpenRouter's report on the key and the bot's own record agree).
@@ -91,7 +102,7 @@ def mask(text: str, secrets: Sequence[str]) -> str:
 
 
 def read_env_file(path: Path) -> dict[str, str]:
-    """The two values from .env, read here and kept in memory only."""
+    """The three values from .env, read here and kept in memory only."""
     from dotenv import dotenv_values
 
     if not path.is_file():
@@ -103,6 +114,11 @@ def read_env_file(path: Path) -> dict[str, str]:
         if value in PLACEHOLDERS:
             raise GoLiveError(f"{name} in .env is empty or still a placeholder.")
         found[name] = value
+    try:
+        # It must decode to 32 bytes; the message never shows the value.
+        parse_ledger_key(found[KEY_ENV])
+    except LedgerKeyError as error:
+        raise GoLiveError(f"In .env: {error}") from None
     return found
 
 
@@ -180,7 +196,8 @@ def run_dry_run(
     if question_url:
         command += ["--question-url", question_url]
     env = dict(os.environ)
-    env.update(values)
+    env.update({name: values[name] for name in DRY_RUN_SECRET_NAMES})
+    env.pop(KEY_ENV, None)
     # The values are already in the environment; main.py need not read .env.
     env["GLASS_EARTH_SKIP_DOTENV"] = "1"
     env.pop("GITHUB_ACTIONS", None)
@@ -251,7 +268,7 @@ def show_result(
 def step_one(ctx: Context, question_url: str | None) -> int:
     check_repository(ctx)
     values = read_env_file(ctx.repo / ".env")
-    ctx.out("Read METACULUS_TOKEN and OPENROUTER_API_KEY from .env (values not shown).")
+    ctx.out(f"Read {', '.join(SECRET_NAMES[:-1])} and {SECRET_NAMES[-1]} from .env (values not shown).")
     set_secrets(ctx, values)
     report_credit(ctx, values["OPENROUTER_API_KEY"])
     started = time.time()

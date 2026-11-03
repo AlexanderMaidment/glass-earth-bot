@@ -1,8 +1,9 @@
 """
 Repository-wide safety checks: the pinned litellm is not the compromised
 release, publishing stays switched off by default, every workflow that can
-spend records its spending (and any low-credit warning day), and Glass Earth
-text has no em dashes.
+spend records its spending (and any low-credit warning day), every workflow
+that runs the bot gets the ledger key from its secrets and commits each
+sealed line with its box, and Glass Earth text has no em dashes.
 """
 
 import re
@@ -70,8 +71,28 @@ class WorkflowGateTests(unittest.TestCase):
             self.assertIn("GLASS_EARTH_ENSEMBLE_SIZE: ${{ vars.GLASS_EARTH_ENSEMBLE_SIZE }}", body, name)
             self.assertIn("GLASS_EARTH_HIGH_VALUE_MODEL: ${{ vars.GLASS_EARTH_HIGH_VALUE_MODEL }}", body, name)
 
+    def test_workflows_that_run_the_bot_pass_the_ledger_key_and_commit_the_boxes(self):
+        runs_bot = sorted(p.name for p in WORKFLOWS.glob("*.yaml") if "main.py" in text(p))
+        self.assertEqual(runs_bot, ["run_bot_on_metaculus_cup.yaml", "run_bot_on_tournament.yaml", "test_bot.yaml"])
+        for path in WORKFLOWS.glob("*.yaml"):
+            body = text(path)
+            # The key comes only from the repository's secrets, and only the
+            # step that runs the bot gets it.
+            self.assertNotIn("vars.GLASS_EARTH_LEDGER_KEY", body, path.name)
+            self.assertEqual(body.count("secrets.GLASS_EARTH_LEDGER_KEY"), 1 if path.name in runs_bot else 0, path.name)
+            if path.name not in runs_bot:
+                continue
+            run_step = body[body.index("- name: Run bot"):]
+            run_step = run_step[: run_step.index("- name:", 1)]
+            self.assertIn("GLASS_EARTH_LEDGER_KEY: ${{ secrets.GLASS_EARTH_LEDGER_KEY }}", run_step, path.name)
+            # A sealed line is committed with its box, so neither is ever left behind.
+            last_step = body[body.rindex("- name:"):]
+            self.assertIn("forecasts/ledger.jsonl forecasts/sealed_boxes.jsonl", last_step, path.name)
+
     def test_spend_log_merges_like_the_ledger(self):
         attributes = text(REPO / ".gitattributes")
+        self.assertIn("forecasts/ledger.jsonl merge=union", attributes)
+        self.assertIn("forecasts/sealed_boxes.jsonl merge=union", attributes)
         self.assertIn("forecasts/spend.jsonl merge=union", attributes)
         self.assertIn("forecasts/credit_warnings.jsonl merge=union", attributes)
         self.assertIn("forecasts/** -text", attributes)
