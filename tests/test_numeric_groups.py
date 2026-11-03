@@ -125,6 +125,7 @@ class NumericGroupTests(OfflineTestCase):
         self.assertEqual(by_id[90021]["group_option"], "Revenue (synthetic)")
         self.assertEqual(by_id[90021]["type"], "discrete")
         self.assertEqual(len(by_id[90021]["final_forecast"]["continuous_cdf"]), 19)
+        self.assertEqual(by_id[90011]["forecast_reason"], "first forecast")
         raw = Path("forecasts/ledger.jsonl").read_bytes()
         self.assertNotIn(FAKE_TOKEN.encode(), raw)
 

@@ -1,9 +1,12 @@
 import argparse
 import asyncio
 import logging
+import math
 import os
+import statistics
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Literal, Sequence
 
 import dotenv
@@ -57,6 +60,26 @@ from ledger import (
     ledger_entry,
     payload_for,
 )
+from metered_llm import MeteredLlm
+from reforecast import forecast_due, latest, policy_for
+from routing import (
+    DEFAULT_FORECASTER,
+    HIGH_VALUE_FORECASTER,
+    Route,
+    choose_route,
+    prize_value_usd,
+)
+from spend import (
+    PRICES_RETRIEVED_AT_UTC,
+    QuestionTag,
+    SpendMeter,
+    current_question,
+    daily_cap_from_env,
+    estimate_tokens,
+    money_text,
+    spend_log_paths,
+    worst_case_call_cost,
+)
 
 # The offline tests set GLASS_EARTH_SKIP_DOTENV=1 so that they never read the
 # real keys in .env.
@@ -64,30 +87,49 @@ if os.getenv("GLASS_EARTH_SKIP_DOTENV") != "1":
     dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Glass Earth ensemble: one forecaster from each of three model families, all
-# called through OpenRouter. The IDs come from OpenRouter's public model list
-# (https://openrouter.ai/api/v1/models), checked on 2026-11-01. All three cost
-# US$2 per million input tokens and US$10 per million output tokens.
-ENSEMBLE_MODELS = {
-    "forecaster_openai": "openrouter/openai/gpt-6.1-sol",
-    "forecaster_anthropic": "openrouter/anthropic/claude-sonnet-5.5",
-    "forecaster_google": "openrouter/google/gemini-4-argon",
-}
+# Glass Earth forecasters. Each question gets ENSEMBLE_SIZE independent
+# forecasts from one model, and the median is submitted. routing.py picks the
+# model: Claude Opus 5.5 by default, Claude Fable 5.1 for high-value questions
+# while the daily cap allows (DEFAULT_FORECASTER and HIGH_VALUE_FORECASTER).
+# Model IDs and prices are from OpenRouter's public model list
+# (https://openrouter.ai/api/v1/models), read on 2026-11-03; see spend.py.
+ENSEMBLE_SIZE = 3
+# The most a forecaster may write per call, its thinking included. This also
+# bounds the worst-case cost that the daily cap counts.
+FORECASTER_MAX_TOKENS = 10000
 # ":online" adds OpenRouter's web search, which uses OpenAI's own search for
 # OpenAI models. The template's default researcher is no longer on OpenRouter.
 RESEARCH_MODEL = "openrouter/openai/gpt-6.1-terra:online"
+RESEARCH_MAX_TOKENS = 6000
+# Assumptions for the worst case only, since OpenRouter reports neither: at
+# most 5 searches per research call, adding at most 20,000 prompt tokens.
+RESEARCH_MAX_SEARCHES = 5
+RESEARCH_SEARCH_CONTEXT_TOKENS = 20000
 # A cheap model that summarises the research and reads the final numbers out
 # of each forecast.
 HELPER_MODEL = "openrouter/openai/gpt-6-luna"
+HELPER_MAX_TOKENS = 4000
+# Worst-case planning: the prompt text around the research in a forecast
+# prompt, and how many tries structure_output may make per sample.
+FORECAST_TEMPLATE_TOKENS = 1500
+STRUCTURE_OUTPUT_TRIES = 3
 
 # The ensemble member that the current forecast task belongs to. Each member
 # runs in its own asyncio task, so setting this affects only that member.
-_ensemble_member: ContextVar[str] = ContextVar("ensemble_member", default="default")
+_ensemble_member: ContextVar[int] = ContextVar("ensemble_member", default=1)
+# The route (model) chosen for the question being forecast, and why it is
+# being forecast now.
+_current_route: ContextVar[Route | None] = ContextVar("current_route", default=None)
+_forecast_reason: ContextVar[str | None] = ContextVar("forecast_reason", default=None)
 _MODEL_MARKER = "Model: "
 
 
 def _model_label(model: str) -> str:
     return model.removeprefix("openrouter/")
+
+
+def _member_label(model: str, member: int) -> str:
+    return f"{_model_label(model)} (member {member} of {ENSEMBLE_SIZE})"
 
 
 def _question_for_prompt(question: MetaculusQuestion) -> str:
@@ -116,6 +158,51 @@ def _question_for_prompt(question: MetaculusQuestion) -> str:
     return text
 
 
+def _question_tag(question: MetaculusQuestion) -> QuestionTag:
+    return QuestionTag(
+        question_id=question.id_of_question,
+        post_id=question.id_of_post,
+        url=question.page_url,
+    )
+
+
+def _last_forecast_on_metaculus(question: MetaculusQuestion) -> datetime | None:
+    try:
+        return question.timestamp_of_my_last_forecast
+    except ValueError:
+        return None
+
+
+def _median_of_option_lists(
+    predictions: list[PredictedOptionList],
+) -> PredictedOptionList:
+    """Each option's median across the forecasts, rescaled to sum to 1."""
+    from forecasting_tools import PredictedOption
+
+    names = [option.option_name for option in predictions[0].predicted_options]
+    for prediction in predictions:
+        if {option.option_name for option in prediction.predicted_options} != set(names):
+            raise ValueError("All forecasts must give the same options")
+    medians = []
+    for name in names:
+        values = [
+            option.probability
+            for prediction in predictions
+            for option in prediction.predicted_options
+            if option.option_name == name
+        ]
+        medians.append(statistics.median(values))
+    total = sum(medians)
+    if total <= 0:
+        raise ValueError("The option medians sum to zero")
+    return PredictedOptionList(
+        predicted_options=[
+            PredictedOption(option_name=name, probability=value / total)
+            for name, value in zip(names, medians)
+        ]
+    )
+
+
 def _split_model_line(reasoning: str) -> tuple[str, str]:
     """Separate the "Model: ..." line that each ensemble forecast starts with."""
     first_line, _, rest = reasoning.partition("\n")
@@ -137,8 +224,15 @@ class GlassEarthBot(ForecastBot):
     """
     Glass Earth v0, built on FallTemplateBot2026, the Metaculus template bot for
     the Fall 2026 FutureEval Bot Tournament. Changes from the template:
-    - Each question gets one forecast from each model in ENSEMBLE_MODELS,
-      combined by the template's own _aggregate_predictions.
+    - Each question gets ENSEMBLE_SIZE forecasts from the model routing.py
+      picks for it, and the median is submitted.
+    - Every model call is metered against a hard daily cap (spend.py); a
+      question that could take the day over the cap is skipped, and each
+      question's cost goes in the ledger.
+    - Questions are forecast one at a time, so the cap check before each one
+      sees everything spent so far.
+    - Market Pulse questions are forecast again on a schedule
+      (reforecast.py); FutureEval and MiniBench questions are forecast once.
     - Each model states a base rate from a reference class first, then adjusts
       it for the current evidence.
     - The comment states the submitted forecast and how it was combined, and
@@ -224,14 +318,43 @@ class GlassEarthBot(ForecastBot):
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
 
-    def __init__(self, *, run_mode: str = "unknown", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        run_mode: str = "unknown",
+        spend_meter: SpendMeter | None = None,
+        **kwargs: Any,
+    ) -> None:
         if kwargs.get("metaculus_client") is None:
             kwargs["metaculus_client"] = LedgerClient()
+        if kwargs.get("llms") is not None:
+            raise ValueError(
+                "GlassEarthBot builds its own metered models, so that every call counts against the cap"
+            )
+        if spend_meter is None:
+            cap, reserve = daily_cap_from_env()
+            log_path, read_paths = spend_log_paths()
+            spend_meter = SpendMeter(
+                cap=cap,
+                reserve=reserve,
+                log_path=log_path,
+                read_paths=read_paths,
+                run_mode=run_mode,
+                dry_run=not kwargs.get("publish_reports_to_metaculus", False),
+            )
+        self.meter = spend_meter
+        kwargs["llms"] = self._metered_llms(spend_meter)
         super().__init__(**kwargs)
+        unmetered = [
+            purpose for purpose, llm in self._llms.items() if not isinstance(llm, MeteredLlm)
+        ]
+        if unmetered:
+            raise ValueError(f"These models are not metered: {unmetered}")
         self.run_mode = run_mode
         self.ledger = ForecastLedger(LEDGER_PATH)
         self.dry_run_ledger = ForecastLedger(DRY_RUN_LEDGER_PATH)
         self._ledger_contexts: dict[int, dict[str, Any]] = {}
+        self.skipped_not_due: list[str] = []
         if isinstance(self.metaculus_client, LedgerClient):
             self.metaculus_client.on_forecast_accepted = self._record_submitted_forecast
         elif self.publish_reports_to_metaculus:
@@ -241,32 +364,82 @@ class GlassEarthBot(ForecastBot):
 
     ##################################### ENSEMBLE #####################################
 
+    _PURPOSES = (
+        "default",
+        "forecaster_default",
+        "forecaster_high_value",
+        "summarizer",
+        "researcher",
+        "parser",
+    )
+
     @classmethod
     def _llm_config_defaults(cls) -> dict[str, str | GeneralLlm | None]:
-        forecasters: dict[str, str | GeneralLlm | None] = {
-            purpose: GeneralLlm(model=model, timeout=300, allowed_tries=2)
-            for purpose, model in ENSEMBLE_MODELS.items()
-        }
+        # Only names the purposes for ForecastBot's checks. The models used are
+        # always the metered ones from _metered_llms.
+        return {purpose: None for purpose in cls._PURPOSES}
+
+    @staticmethod
+    def _metered_llms(meter: SpendMeter) -> dict[str, str | GeneralLlm | None]:
+        def forecaster(model: str, purpose: str) -> MeteredLlm:
+            return MeteredLlm(
+                model,
+                purpose=purpose,
+                meter=meter,
+                max_tokens=FORECASTER_MAX_TOKENS,
+                timeout=300,
+                allowed_tries=2,
+            )
+
+        default = forecaster(DEFAULT_FORECASTER, "forecaster")
         return {
-            "default": forecasters[next(iter(ENSEMBLE_MODELS))],
-            **forecasters,
-            "summarizer": GeneralLlm(model=HELPER_MODEL, timeout=120, allowed_tries=2),
-            "researcher": GeneralLlm(
-                model=RESEARCH_MODEL, timeout=300, allowed_tries=2
+            "default": default,
+            "forecaster_default": default,
+            "forecaster_high_value": forecaster(HIGH_VALUE_FORECASTER, "forecaster"),
+            "summarizer": MeteredLlm(
+                HELPER_MODEL,
+                purpose="summarizer",
+                meter=meter,
+                max_tokens=HELPER_MAX_TOKENS,
+                timeout=120,
+                allowed_tries=2,
             ),
-            "parser": GeneralLlm(model=HELPER_MODEL, timeout=120, allowed_tries=2),
+            "researcher": MeteredLlm(
+                RESEARCH_MODEL,
+                purpose="researcher",
+                meter=meter,
+                max_tokens=RESEARCH_MAX_TOKENS,
+                max_searches=RESEARCH_MAX_SEARCHES,
+                search_context_tokens=RESEARCH_SEARCH_CONTEXT_TOKENS,
+                timeout=300,
+                allowed_tries=2,
+            ),
+            "parser": MeteredLlm(
+                HELPER_MODEL,
+                purpose="parser",
+                meter=meter,
+                max_tokens=HELPER_MAX_TOKENS,
+                timeout=120,
+                allowed_tries=2,
+            ),
         }
+
+    def _forecaster_llm(self, route: Route | None = None) -> GeneralLlm:
+        route = route if route is not None else _current_route.get()
+        if route is not None and route.tier == "high_value":
+            return self.get_llm("forecaster_high_value", "llm")
+        return self.get_llm("forecaster_default", "llm")
 
     async def _research_and_make_predictions(
         self, question: MetaculusQuestion
     ) -> ResearchWithPredictions[PredictionTypes]:
         """
-        Same as ForecastBot's version, except that each prediction comes from a
-        different model in ENSEMBLE_MODELS instead of repeating one model.
-        The template's _aggregate_predictions then combines them: the median for
-        binary questions, the average of each option's probability for multiple
-        choice, and the median of the cumulative distributions for numeric and
-        date questions.
+        Same as ForecastBot's version, except that each of the ENSEMBLE_SIZE
+        predictions is labelled with its model and member number.
+        _aggregate_predictions then takes the median: of the probabilities for
+        binary questions, of each option's probability for multiple choice,
+        and of the cumulative distributions, point by point, for numeric,
+        discrete and date questions.
         """
         notepad = await self._get_notepad(question)
         notepad.total_research_reports_attempted += 1
@@ -277,8 +450,8 @@ class GlassEarthBot(ForecastBot):
         )
 
         tasks = [
-            self._make_prediction_with(purpose, question, research_to_use)
-            for purpose in ENSEMBLE_MODELS
+            self._make_prediction_with(member, question, research_to_use)
+            for member in range(1, ENSEMBLE_SIZE + 1)
         ]
         valid_predictions, errors, exception_group = (
             await self._gather_results_and_exceptions(tasks)
@@ -299,20 +472,20 @@ class GlassEarthBot(ForecastBot):
         )
 
     async def _make_prediction_with(
-        self, purpose: str, question: MetaculusQuestion, research: str
+        self, member: int, question: MetaculusQuestion, research: str
     ) -> ReasonedPrediction[PredictionTypes]:
-        _ensemble_member.set(purpose)
-        model = _model_label(self.get_llm(purpose, "llm").model)
+        _ensemble_member.set(member)
+        label = _member_label(self._ensemble_llm().model, member)
         try:
             prediction = await self._make_prediction(question, research)
         except Exception as e:
-            raise RuntimeError(f"{model} failed: {e.__class__.__name__}: {e}") from e
+            raise RuntimeError(f"{label} failed: {e.__class__.__name__}: {e}") from e
         return prediction.model_copy(
-            update={"reasoning": f"{_MODEL_MARKER}{model}\n\n{prediction.reasoning}"}
+            update={"reasoning": f"{_MODEL_MARKER}{label}\n\n{prediction.reasoning}"}
         )
 
     def _ensemble_llm(self) -> GeneralLlm:
-        return self.get_llm(_ensemble_member.get(), "llm")
+        return self._forecaster_llm()
 
     @classmethod
     def _format_and_expand_research_summary(
@@ -372,6 +545,12 @@ class GlassEarthBot(ForecastBot):
         predictions: list[PredictionTypes],
         question: MetaculusQuestion,
     ) -> PredictionTypes:
+        if isinstance(question, MultipleChoiceQuestion):
+            # The template averages; Glass Earth takes the median, like the
+            # other question types.
+            return _median_of_option_lists(predictions)  # type: ignore[arg-type]
+        # Binary: the median (forecasting-tools). Numeric, discrete and date:
+        # the median of the cumulative distributions, point by point.
         aggregated = await super()._aggregate_predictions(predictions, question)
         if isinstance(question, BinaryQuestion):
             # The comment shows the final probability to two decimal places of a
@@ -380,15 +559,25 @@ class GlassEarthBot(ForecastBot):
             aggregated = round(aggregated, 4)
         return aggregated
 
-    @staticmethod
-    def _combination_rule(question: MetaculusQuestion) -> str:
+    def _combination_rule(self, question: MetaculusQuestion) -> str:
+        model = _model_label(self._forecaster_llm().model)
+        source = f"{ENSEMBLE_SIZE} independent forecasts from {model}"
         if isinstance(question, BinaryQuestion):
-            return "the median of the model forecasts, after each is held between 1% and 99%."
+            return f"the median of {source}, after each is held between 1% and 99%."
         if isinstance(question, MultipleChoiceQuestion):
-            return "the average of each option's probability across the model forecasts."
+            return f"the median of each option's probability across {source}, rescaled to sum to 100%."
         if isinstance(question, (NumericQuestion, DateQuestion)):
-            return "the median of the model forecasts, taken point by point along their cumulative distributions."
-        return "the forecasting-tools method for this question type, applied to the model forecasts."
+            return f"the median of {source}, taken point by point along their cumulative distributions."
+        return f"the forecasting-tools method for this question type, applied to {source}."
+
+    def _cost_text(self, question: MetaculusQuestion) -> str:
+        cost = self.meter.question_cost(question.id_of_question)
+        if cost.unknown_calls:
+            return (
+                f"Unknown ({cost.unknown_calls} of {cost.calls} model calls had no reported cost; "
+                f"at least US${money_text(cost.known)})"
+            )
+        return f"US${money_text(cost.known)} over {cost.calls} model calls"
 
     def _create_comment(
         self,
@@ -424,7 +613,9 @@ class GlassEarthBot(ForecastBot):
 
         disabled = "extra_metadata_in_explanation is disabled"
         show_metadata = self.extra_metadata_in_explanation
-        cost = f"${round(final_cost, 4)} (estimated)" if show_metadata else disabled
+        # The bot's own meter, not litellm's estimate: OpenRouter's reported
+        # cost where it gives one (see spend.py).
+        cost = self._cost_text(question) if show_metadata else disabled
         time_spent = (
             f"{round(time_spent_in_minutes, 2)} minutes" if show_metadata else disabled
         )
@@ -469,32 +660,169 @@ class GlassEarthBot(ForecastBot):
 
     ##################################### LEDGER #####################################
 
+    def _select_questions(
+        self, questions: Sequence[MetaculusQuestion]
+    ) -> list[tuple[MetaculusQuestion, str]]:
+        """
+        The questions to forecast now, each with the reason.
+        - Only open questions: a group can hold closed or upcoming
+          sub-questions next to open ones.
+        - Market Pulse (a re-forecast policy): forecast when due.
+        - Otherwise, with skip_previously_forecasted_questions: once only,
+          skipping anything Metaculus says was forecast and anything already
+          in the ledger (a second guard next to the template's check).
+        """
+        now = datetime.now(timezone.utc)
+        ledger_times = self.ledger.last_recorded_at()
+        # Any line at all counts for the one-forecast rule, even an unreadable time.
+        in_ledger = self.ledger.question_ids()
+        selected: list[tuple[MetaculusQuestion, str]] = []
+        already = 0
+        for question in questions:
+            if question.state is not None and question.state != QuestionState.OPEN:
+                logger.info(
+                    f"Not forecasting {question.page_url} ({question.group_question_option}): it is {question.state.value}"
+                )
+                continue
+            policy = policy_for(question.tournament_slugs)
+            if policy is not None:
+                last = latest(
+                    _last_forecast_on_metaculus(question),
+                    ledger_times.get(question.id_of_question or -1),
+                )
+                due, reason = forecast_due(
+                    now=now,
+                    close_time=question.close_time,
+                    last_forecast_at=last,
+                    policy=policy,
+                )
+                if not due:
+                    self.skipped_not_due.append(f"{question.page_url}: {reason}")
+                    logger.info(f"Not forecasting {question.page_url} yet, {reason}")
+                    continue
+                selected.append((question, reason))
+            elif self.skip_previously_forecasted_questions:
+                if question.already_forecasted or question.id_of_question in in_ledger:
+                    already += 1
+                    continue
+                selected.append((question, "first forecast"))
+            else:
+                selected.append((question, "forecast on request (re-forecasting allowed here)"))
+        if already:
+            logger.info(
+                f"Skipping {already} questions already forecast (on Metaculus or in the ledger)"
+            )
+        return selected
+
+    def _worst_case_question_cost(
+        self, question: MetaculusQuestion, forecaster_model: str
+    ) -> Decimal:
+        """
+        The most forecasting this question could cost: every call at its
+        output limit, every retry used. Calculated from MODEL_PRICES; this is
+        what the cap check before a question counts.
+        """
+        question_tokens = estimate_tokens(
+            self._get_research_prompt(question, self.get_llm("researcher"))
+            + (question.background_info or "")
+        )
+        # Text written by one model is read by the next. estimate_tokens
+        # counts 3 characters a token where models write about 4, so scale up.
+        research_out = math.ceil(RESEARCH_MAX_TOKENS * 4 / 3)
+        member_out = math.ceil(FORECASTER_MAX_TOKENS * 4 / 3)
+        research = worst_case_call_cost(
+            RESEARCH_MODEL,
+            question_tokens + RESEARCH_SEARCH_CONTEXT_TOKENS,
+            RESEARCH_MAX_TOKENS,
+            RESEARCH_MAX_SEARCHES,
+        ) * self.get_llm("researcher", "llm").allowed_tries
+        summary = worst_case_call_cost(
+            HELPER_MODEL, question_tokens + research_out, HELPER_MAX_TOKENS
+        )
+        # A conditional question forecasts up to 4 linked questions per member.
+        forecasts_per_member = 4 if isinstance(question, ConditionalQuestion) else 1
+        members = (
+            ENSEMBLE_SIZE
+            * forecasts_per_member
+            * worst_case_call_cost(
+                forecaster_model,
+                question_tokens + research_out + FORECAST_TEMPLATE_TOKENS,
+                FORECASTER_MAX_TOKENS,
+            )
+        )
+        parser_calls = (
+            ENSEMBLE_SIZE
+            * forecasts_per_member
+            * self._structure_output_validation_samples
+            * STRUCTURE_OUTPUT_TRIES
+        )
+        parser = parser_calls * worst_case_call_cost(
+            HELPER_MODEL, member_out + FORECAST_TEMPLATE_TOKENS, HELPER_MAX_TOKENS
+        )
+        return research + summary + members + parser
+
+    def _route_for(self, question: MetaculusQuestion) -> Route:
+        self.meter.refresh_day()
+        return choose_route(
+            value_usd=prize_value_usd(question.tournament_slugs, question.question_weight),
+            worst_case_default_usd=self._worst_case_question_cost(question, DEFAULT_FORECASTER),
+            worst_case_high_value_usd=self._worst_case_question_cost(
+                question, HIGH_VALUE_FORECASTER
+            ),
+            spent_today_usd=self.meter.spent_today + self.meter.in_flight,
+            cap_usd=self.meter.cap,
+            reserve_usd=self.meter.reserve,
+        )
+
     async def forecast_questions(
         self,
         questions: Sequence[MetaculusQuestion],
         return_exceptions: bool = False,
     ) -> list[ForecastReport] | list[ForecastReport | BaseException]:
-        # A group can hold closed or upcoming sub-questions next to open ones;
-        # forecast only the open ones.
-        open_questions = [
-            q for q in questions if q.state is None or q.state == QuestionState.OPEN
-        ]
-        if len(open_questions) != len(questions):
-            logger.info(
-                f"Skipping {len(questions) - len(open_questions)} questions that are not open"
-            )
-        questions = open_questions
-        # A second guard against forecasting a question twice, next to the
-        # template's check of Metaculus: skip anything already in the ledger.
-        if self.skip_previously_forecasted_questions:
-            in_ledger = self.ledger.question_ids()
-            remaining = [q for q in questions if q.id_of_question not in in_ledger]
-            if len(remaining) != len(questions):
-                logger.info(
-                    f"Skipping {len(questions) - len(remaining)} questions already in the ledger"
+        """
+        Like ForecastBot's version, but one question at a time, each after a
+        cap check, so that no question starts unless its worst case fits in
+        what is left of today's cap. A question that does not fit is skipped
+        and logged (in the run log and forecasts/spend.jsonl), not failed.
+        """
+        reports: list[ForecastReport | BaseException] = []
+        for question, reason in self._select_questions(questions):
+            route = self._route_for(question)
+            tag = _question_tag(question)
+            if route.action == "skip":
+                logger.warning(
+                    f"Spend cap: skipping {question.page_url}"
+                    f"{' (' + question.group_question_option + ')' if question.group_question_option else ''}: {route.reason}"
                 )
-            questions = remaining
-        return await super().forecast_questions(questions, return_exceptions)
+                self.meter.record_skip(tag, route.reason, route.worst_case_usd)
+                continue
+            logger.info(
+                f"Forecasting {question.page_url} with {_model_label(route.model or '')}: "
+                f"{route.reason}; {reason}"
+            )
+            tokens = (
+                _current_route.set(route),
+                _forecast_reason.set(reason),
+                current_question.set(tag),
+            )
+            try:
+                reports.append(
+                    await self._run_individual_question_with_error_propagation(question)
+                )
+            except Exception as e:
+                if not return_exceptions:
+                    raise
+                reports.append(e)
+            finally:
+                _current_route.reset(tokens[0])
+                _forecast_reason.reset(tokens[1])
+                current_question.reset(tokens[2])
+        if self.folder_to_save_reports_to:
+            finished = [r for r in reports if not isinstance(r, BaseException)]
+            ForecastReport.save_object_list_to_file_path(
+                finished, self._create_file_path_to_save_to(list(questions))
+            )
+        return reports
 
     async def _run_individual_question(
         self, question: MetaculusQuestion
@@ -552,6 +880,12 @@ class GlassEarthBot(ForecastBot):
                     }
                 )
         models_with_forecast = {entry["model"] for entry in model_forecasts}
+        forecaster = self._forecaster_llm().model
+        expected_members = [
+            _member_label(forecaster, member) for member in range(1, ENSEMBLE_SIZE + 1)
+        ]
+        route = _current_route.get()
+        cost = self.meter.question_cost(question.id_of_question)
         return {
             "post_id": question.id_of_post,
             "url": question.page_url,
@@ -565,10 +899,18 @@ class GlassEarthBot(ForecastBot):
             "combined_by": self._combination_rule(question),
             "model_forecasts": model_forecasts,
             "models_without_forecast": [
-                _model_label(model)
-                for model in ENSEMBLE_MODELS.values()
-                if _model_label(model) not in models_with_forecast
+                label for label in expected_members if label not in models_with_forecast
             ],
+            "forecaster_model": _model_label(forecaster),
+            "route": route.reason if route is not None else None,
+            "forecast_reason": _forecast_reason.get(),
+            "cost_usd": cost.as_text(),
+            "cost_usd_cap_basis": money_text(cost.cap_basis),
+            "cost_by_model_usd": {
+                model: money_text(amount) for model, amount in sorted(cost.by_model.items())
+            },
+            "model_calls": cost.calls,
+            "prices_retrieved_at_utc": PRICES_RETRIEVED_AT_UTC,
         }
 
     def _record_submitted_forecast(
@@ -1160,38 +1502,97 @@ class GlassEarthBot(ForecastBot):
         )
 
 
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+MARKET_PULSE_ENV = "GLASS_EARTH_MARKET_PULSE"
 
-    parser = argparse.ArgumentParser(description="Run the template forecasting bot")
+# Per-mode tournament URL shown in the summary banner footer. These piggyback
+# on the forecasting_tools SDK constants and need updating whenever those
+# rotate seasons.
+TOURNAMENT_URLS = {
+    "tournament": "https://www.metaculus.com/tournament/fall-futureeval-2026/",
+    "market_pulse": "https://www.metaculus.com/tournament/market-pulse-26q4/",
+    "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-fall-2026/",
+    "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
+}
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the Glass Earth forecasting bot")
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "metaculus_cup", "test_questions"],
+        choices=["tournament", "market_pulse", "metaculus_cup", "test_questions"],
         default="tournament",
-        help="What to forecast on (default: tournament)",
+        help=(
+            "What to forecast on (default: tournament, which is the Fall 2026 "
+            f"FutureEval tournament and MiniBench, plus Market Pulse when {MARKET_PULSE_ENV}=true)"
+        ),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Forecast without posting anything to Metaculus (publish_reports_to_metaculus=False)",
     )
-    args = parser.parse_args()
-    run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
+    parser.add_argument(
+        "--max-questions",
+        type=int,
+        default=None,
+        help="Forecast at most this many questions from each target (for a short paid test)",
+    )
+    parser.add_argument(
+        "--question-url",
+        type=str,
+        default=None,
+        help="Forecast only this question (a dry run only). A group forecasts its open sub-questions.",
+    )
+    parser.add_argument(
+        "--daily-cap-usd",
+        type=str,
+        default=None,
+        help="The daily spend cap in US dollars for this run (default: GLASS_EARTH_DAILY_CAP_USD, else 5.00)",
+    )
+    return parser
+
+
+async def _forecast_target(
+    bot: GlassEarthBot, target: int | str, max_questions: int | None
+) -> list[ForecastReport | BaseException]:
+    if max_questions is None:
+        return await bot.forecast_on_tournament(target, return_exceptions=True)
+    questions = bot.metaculus_client.get_all_open_questions_from_tournament(target)
+    return await bot.forecast_questions(questions[:max_questions], return_exceptions=True)
+
+
+def run(argv: Sequence[str] | None = None) -> list[ForecastReport | BaseException]:
+    args = build_arg_parser().parse_args(argv)
+    run_mode: Literal["tournament", "market_pulse", "metaculus_cup", "test_questions"] = args.mode
+    if args.question_url and not args.dry_run:
+        raise SystemExit("--question-url is for dry runs only; add --dry-run")
+    if args.max_questions is not None and args.max_questions < 1:
+        raise SystemExit("--max-questions must be at least 1")
 
     check_environment(strict=True)
     publish_to_metaculus = not args.dry_run
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The models are set at the top of this file
-    # (ENSEMBLE_MODELS, RESEARCH_MODEL and HELPER_MODEL).
-    template_bot = GlassEarthBot(
+    cap, reserve = daily_cap_from_env(args.daily_cap_usd)
+    log_path, read_paths = spend_log_paths()
+    meter = SpendMeter(
+        cap=cap,
+        reserve=reserve,
+        log_path=log_path,
+        read_paths=read_paths,
         run_mode=run_mode,
+        dry_run=not publish_to_metaculus,
+    )
+    print(meter.summary_line().replace(" in this run", " so far, before this run"))
+
+    # Configure the bot. The models are set at the top of this file and in
+    # routing.py (DEFAULT_FORECASTER, HIGH_VALUE_FORECASTER).
+    bot = GlassEarthBot(
+        run_mode=run_mode,
+        spend_meter=meter,
         research_reports_per_question=1,
-        predictions_per_research_report=len(ENSEMBLE_MODELS),  # one per model
+        predictions_per_research_report=ENSEMBLE_SIZE,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         # A dry run keeps its full reports for reading; git ignores this folder.
@@ -1202,56 +1603,72 @@ if __name__ == "__main__":
         extra_metadata_in_explanation=True,
     )
 
-    # Per-mode tournament URL shown in the summary banner footer. These
-    # piggyback on the forecasting_tools SDK constants and need updating
-    # whenever those rotate seasons.
-    TOURNAMENT_URLS = {
-        "tournament": "https://www.metaculus.com/tournament/fall-futureeval-2026/",
-        "metaculus_cup": "https://www.metaculus.com/tournament/metaculus-cup-fall-2026/",
-        "test_questions": "https://www.metaculus.com/tournament/bot-testing-area/",
-    }
-
     # Dispatch on mode. Each branch produces a list of ForecastReport (or
     # exceptions, since return_exceptions=True) which then flows into the
-    # summary printers below.
+    # summary printers below. Targets run in order of prize value, so the cap
+    # reaches the FutureEval tournament first.
     client = MetaculusClient()
-    if run_mode == "tournament":
-        seasonal_tournament_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
-            )
+    if args.question_url:
+        bot.skip_previously_forecasted_questions = False
+        found = bot.metaculus_client.get_question_by_url(
+            args.question_url, group_question_mode="unpack_subquestions"
         )
-        minibench_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_MINIBENCH_ID, return_exceptions=True
-            )
+        questions = found if isinstance(found, list) else [found]
+        questions = [q for q in questions if q.state in (None, QuestionState.OPEN)]
+        if args.max_questions is not None:
+            questions = questions[: args.max_questions]
+        forecast_reports = asyncio.run(
+            bot.forecast_questions(questions, return_exceptions=True)
         )
-        forecast_reports = seasonal_tournament_reports + minibench_reports
+    elif run_mode == "tournament":
+        forecast_reports = asyncio.run(
+            _forecast_target(bot, client.CURRENT_AI_COMPETITION_ID, args.max_questions)
+        )
+        forecast_reports += asyncio.run(
+            _forecast_target(bot, client.CURRENT_MINIBENCH_ID, args.max_questions)
+        )
+        if os.getenv(MARKET_PULSE_ENV, "").strip().lower() == "true":
+            forecast_reports += asyncio.run(
+                _forecast_target(bot, client.CURRENT_MARKET_PULSE_ID, args.max_questions)
+            )
+    elif run_mode == "market_pulse":
+        # Market Pulse questions are forecast again on a schedule (reforecast.py).
+        forecast_reports = asyncio.run(
+            _forecast_target(bot, client.CURRENT_MARKET_PULSE_ID, args.max_questions)
+        )
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
         # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
         # MetaculusClient.AI_2027_TOURNAMENT_ID = "ai-2027" are also valid
         # targets here.
-        template_bot.skip_previously_forecasted_questions = False
+        bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_METACULUS_CUP_ID, return_exceptions=True
-            )
+            _forecast_target(bot, client.CURRENT_METACULUS_CUP_ID, args.max_questions)
         )
-    elif run_mode == "test_questions":
+    else:
         # The bot-testing-area tournament contains all question types and is
         # the recommended target for smoke-testing your bot.
         # https://www.metaculus.com/tournament/bot-testing-area/
-        template_bot.skip_previously_forecasted_questions = False
+        bot.skip_previously_forecasted_questions = False
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                "bot-testing-area", return_exceptions=True
-            )
+            _forecast_target(bot, "bot-testing-area", args.max_questions)
         )
 
-    template_bot.log_report_summary(forecast_reports)
+    bot.log_report_summary(forecast_reports)
     print_run_summary_banner(
         forecast_reports,
         will_publish=publish_to_metaculus,
         tournament_url=TOURNAMENT_URLS.get(run_mode),
     )
+    print(meter.summary_line())
+    if bot.skipped_not_due:
+        print(f"{len(bot.skipped_not_due)} Market Pulse question(s) were not due for a new forecast.")
+    return forecast_reports
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    run()

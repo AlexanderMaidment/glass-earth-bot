@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 LEDGER_PATH = Path("forecasts/ledger.jsonl")
 DRY_RUN_LEDGER_PATH = Path("forecasts/dry_run/ledger.jsonl")
-LEDGER_VERSION = 1
+LEDGER_VERSION = 2
 
 
 class LedgerClient(MetaculusClient):
@@ -81,6 +81,28 @@ class ForecastLedger:
             if isinstance(question_id, int):
                 question_ids.add(question_id)
         return question_ids
+
+    def last_recorded_at(self) -> dict[int, datetime]:
+        """The time of the latest line for each question in the ledger."""
+        if not self.path.exists():
+            return {}
+        latest: dict[int, datetime] = {}
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+                question_id = entry.get("question_id")
+                recorded = datetime.strptime(
+                    entry.get("recorded_at_utc", ""), "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc)
+            except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                continue
+            if isinstance(question_id, int) and (
+                question_id not in latest or recorded > latest[question_id]
+            ):
+                latest[question_id] = recorded
+        return latest
 
 
 def forecast_as_json(prediction: Any) -> Any:
@@ -163,6 +185,14 @@ def ledger_entry(
         "combined_by": context.get("combined_by"),
         "model_forecasts": context.get("model_forecasts"),
         "models_without_forecast": context.get("models_without_forecast"),
+        "forecaster_model": context.get("forecaster_model"),
+        "route": context.get("route"),
+        "forecast_reason": context.get("forecast_reason"),
+        "cost_usd": context.get("cost_usd"),
+        "cost_usd_cap_basis": context.get("cost_usd_cap_basis"),
+        "cost_by_model_usd": context.get("cost_by_model_usd"),
+        "model_calls": context.get("model_calls"),
+        "prices_retrieved_at_utc": context.get("prices_retrieved_at_utc"),
         "code_commit": os.getenv("GITHUB_SHA"),
         "run_url": run_url,
     }

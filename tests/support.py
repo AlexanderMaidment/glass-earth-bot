@@ -18,6 +18,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -274,13 +275,27 @@ class OfflineTestCase(unittest.TestCase):
         os.chdir(self._cwd)
         self._tmp.cleanup()
 
-    def make_bot(self, *, publish: bool, skip: bool = True, run_mode: str = "offline-test"):
+    def make_meter(self, cap: str = "5.00", reserve: str = "2.00", **kwargs: Any):
+        from spend import SpendMeter
+
+        return SpendMeter(
+            cap=Decimal(cap),
+            reserve=Decimal(reserve),
+            log_path=Path("forecasts/spend.jsonl"),
+            read_paths=[Path("forecasts/spend.jsonl")],
+            run_mode=kwargs.pop("run_mode", "offline-test"),
+            dry_run=kwargs.pop("dry_run", False),
+            **kwargs,
+        )
+
+    def make_bot(self, *, publish: bool, skip: bool = True, meter=None, run_mode: str = "offline-test"):
         import main
 
         return main.GlassEarthBot(
             run_mode=run_mode,
+            spend_meter=meter or self.make_meter(run_mode=run_mode, dry_run=not publish),
             research_reports_per_question=1,
-            predictions_per_research_report=len(main.ENSEMBLE_MODELS),
+            predictions_per_research_report=main.ENSEMBLE_SIZE,
             publish_reports_to_metaculus=publish,
             skip_previously_forecasted_questions=skip,
             extra_metadata_in_explanation=True,
