@@ -101,6 +101,22 @@ a usable key stops before it fetches or spends anything, and dry runs seal
 nothing. `scripts/backup_salts.py` copies the salts and records to a folder
 away from GitHub.
 
+### Run logs
+
+Anyone signed in to GitHub can read this repository's workflow logs, while
+the questions a run forecast are still open. So a live run on GitHub Actions
+shows only lines with no question content (`run_log.py`): the run's start
+and setup, the credit and cap lines, the ledger reveal counts, how many
+questions were found, selected, skipped (and why) and posted, and for each
+question its ID, address, outcome and cost. An error shows as its exception's
+type only, never its message. Everything else (research, reasoning,
+forecasts, the template's report summary, warnings, tracebacks) goes to a log
+file on the runner, which is never uploaded or committed and goes when the
+runner does; each forecast's reasoning is still in its comment on Metaculus.
+The offline tests' output stays in a file on the runner too, and the log
+shows only their result. Dry runs, and runs on your own computer, log
+everything as before.
+
 ### Spending
 
 `spend.py` meters every model call. Before each call the bot works out the

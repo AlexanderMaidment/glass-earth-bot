@@ -87,7 +87,7 @@ against `seal_sha256`, so it stays sealed with the rest until the reveal.
 | `model_calls` | How many model calls the question took. |
 | `prices_retrieved_at_utc` | When the prices used for calculated costs were read from OpenRouter's model list. |
 | `code_commit` | The commit of this repository that made the forecast. |
-| `run_url` | The GitHub Actions run. Its log shows the full reasoning for 90 days. |
+| `run_url` | The GitHub Actions run. Its log shows only lines with no question content (see Run logs in `GLASS_EARTH.md`). |
 | `salt` | 32 random bytes in hex. |
 
 The bot also posts its full reasoning as a private comment on each question,
