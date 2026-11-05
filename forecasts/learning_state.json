@@ -1,7 +1,13 @@
 {
  "about": "Written by scripts/learning_loop.py. The resolved questions already reported in LESSONS.md with their scores, the resolved questions left out, and what each morning reported. Questions are named by ID only, with no title, text or option label, and nothing about an open question is ever written here.",
  "left_out": {},
- "mornings": {},
+ "mornings": {
+  "2026-11-05": {
+   "notes": [],
+   "questions": [],
+   "worst": []
+  }
+ },
  "questions": {},
  "state_version": 1
 }

@@ -54,4 +54,6 @@ By question type:
 
 Newest first.
 
-No mornings yet.
+### 5 November 2026
+
+Nothing new resolved.
