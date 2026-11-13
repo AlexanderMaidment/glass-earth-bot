@@ -54,6 +54,10 @@ By question type:
 
 Newest first.
 
+### 13 November 2026
+
+Nothing new resolved.
+
 ### 12 November 2026
 
 Nothing new resolved.
