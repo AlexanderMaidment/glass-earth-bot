@@ -23,20 +23,20 @@ What glass-earth-bot learns from the questions it has forecast, once they resolv
 
 ## Calibration so far
 
-No resolved questions reported yet.
+From the 7 resolved questions reported so far.
 
 Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lower edge up to, not including, its upper edge; the last one includes 100%.
 
 | Forecast of Yes | Count | Mean forecast | Observed frequency of Yes |
 | --- | --- | --- | --- |
 | 0% to 10% | 0 | n/a | n/a |
-| 10% to 20% | 0 | n/a | n/a |
-| 20% to 30% | 0 | n/a | n/a |
+| 10% to 20% | 1 | 17% | 0% |
+| 20% to 30% | 1 | 24% | 0% |
 | 30% to 40% | 0 | n/a | n/a |
-| 40% to 50% | 0 | n/a | n/a |
+| 40% to 50% | 1 | 40% | 0% |
 | 50% to 60% | 0 | n/a | n/a |
 | 60% to 70% | 0 | n/a | n/a |
-| 70% to 80% | 0 | n/a | n/a |
+| 70% to 80% | 1 | 71% | 100% |
 | 80% to 90% | 0 | n/a | n/a |
 | 90% to 100% | 0 | n/a | n/a |
 
@@ -44,15 +44,33 @@ By question type:
 
 | Type | Count | Mean Brier | Mean log score | Mean above uniform |
 | --- | --- | --- | --- | --- |
-| Yes/no | 0 | n/a | n/a | n/a |
+| Yes/no | 4 | 0.083 | -0.329 | 0.365 |
 | Multiple choice | 0 | n/a | n/a | n/a |
-| Numeric | 0 | n/a | n/a | n/a |
-| Discrete | 0 | n/a | n/a | n/a |
+| Numeric | 1 | n/a | -4.112 | 1.291 |
+| Discrete | 2 | n/a | -5.162 | -1.052 |
 | Date | 0 | n/a | n/a | n/a |
 
 ## Mornings
 
 Newest first.
+
+### 15 November 2026
+
+7 newly resolved questions.
+
+| Question | Type | Outcome | Our forecast | Brier | Log score | Above uniform | Metaculus baseline | Metaculus peer |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Question 46654](https://www.metaculus.com/questions/46421/) | Discrete | 1.14 | 5% in the outcome's bin | n/a | -3.001 | 0.149 | 2.4 | 5.6 |
+| [Question 46655](https://www.metaculus.com/questions/46422/) | Numeric | -9.21 | 1.6% in the outcome's bin | n/a | -4.112 | 1.291 | 62.6 | 45.1 |
+| [Question 46656](https://www.metaculus.com/questions/46423/) | Yes/no | No | 40% Yes | 0.160 | -0.511 | 0.182 | 24.3 | -1.0 |
+| [Question 46657](https://www.metaculus.com/questions/46424/) | Discrete | 73.0 | 0.066% in the outcome's bin | n/a | -7.323 | -2.254 | -108.1 | -50.6 |
+| [Question 46658](https://www.metaculus.com/questions/46425/) | Yes/no | No | 24% Yes | 0.058 | -0.274 | 0.419 | 53.9 | -3.9 |
+| [Question 46659](https://www.metaculus.com/questions/46426/) | Yes/no | Yes | 71% Yes | 0.084 | -0.342 | 0.351 | 50.0 | 7.9 |
+| [Question 46660](https://www.metaculus.com/questions/46427/) | Yes/no | No | 17% Yes | 0.029 | -0.186 | 0.507 | 69.4 | 3.9 |
+
+Worst misses:
+
+1. [Question 46657](https://www.metaculus.com/questions/46424/): 0.066% in the outcome's bin, outcome 73.0, log score -7.323. Cause: It treated a sharp price squeeze as a remote tail, underestimating how quickly disease driven supply losses and holiday demand could lift prices.
 
 ### 14 November 2026
 
