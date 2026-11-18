@@ -23,7 +23,7 @@ What glass-earth-bot learns from the questions it has forecast, once they resolv
 
 ## Calibration so far
 
-From the 7 resolved questions reported so far.
+From the 12 resolved questions reported so far.
 
 Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lower edge up to, not including, its upper edge; the last one includes 100%.
 
@@ -46,13 +46,32 @@ By question type:
 | --- | --- | --- | --- | --- |
 | Yes/no | 4 | 0.083 | -0.329 | 0.365 |
 | Multiple choice | 0 | n/a | n/a | n/a |
-| Numeric | 1 | n/a | -4.112 | 1.291 |
-| Discrete | 2 | n/a | -5.162 | -1.052 |
+| Numeric | 2 | n/a | -4.757 | 0.647 |
+| Discrete | 6 | n/a | -4.214 | -0.308 |
 | Date | 0 | n/a | n/a | n/a |
 
 ## Mornings
 
 Newest first.
+
+### 18 November 2026
+
+5 newly resolved questions.
+
+| Question | Type | Outcome | Our forecast | Brier | Log score | Above uniform | Metaculus baseline | Metaculus peer |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Question 46248](https://www.metaculus.com/questions/46016/) | Discrete | 130.0 | 4.9% in the outcome's bin | n/a | -3.011 | -0.015 | 1.7 | 1.2 |
+| [Question 46249](https://www.metaculus.com/questions/46016/) | Discrete | 71.5 | 9.3% in the outcome's bin | n/a | -2.372 | 1.447 | 9.8 | 5.9 |
+| [Question 46250](https://www.metaculus.com/questions/46016/) | Discrete | 11.0 | 0.942% in the outcome's bin | n/a | -4.665 | -1.669 | -25.1 | 2.0 |
+| [Question 46279](https://www.metaculus.com/questions/46006/) | Numeric | 115844000000.0 | 0.451% in the outcome's bin | n/a | -5.402 | 0.002 | -7.4 | 7.3 |
+| [Question 46199](https://www.metaculus.com/questions/45995/) | Discrete | 2.7 | 0.736% in the outcome's bin | n/a | -4.911 | 0.493 | 16.7 | 3.4 |
+
+Worst misses:
+
+1. [Question 46250](https://www.metaculus.com/questions/46016/): 0.942% in the outcome's bin, outcome 11.0, log score -4.665. Cause: The forecast underestimated continued spending growth, placing its upper range below the higher-than-expected guidance.
+2. [Question 46248](https://www.metaculus.com/questions/46016/): 4.9% in the outcome's bin, outcome 130.0, log score -3.011. Cause: Unknown (not reviewed)
+
+1 of the causes were withheld because they repeated the question's own words.
 
 ### 17 November 2026
 
