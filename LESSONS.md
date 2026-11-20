@@ -23,7 +23,7 @@ What glass-earth-bot learns from the questions it has forecast, once they resolv
 
 ## Calibration so far
 
-From the 12 resolved questions reported so far.
+From the 15 resolved questions reported so far.
 
 Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lower edge up to, not including, its upper edge; the last one includes 100%.
 
@@ -32,9 +32,9 @@ Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lowe
 | 0% to 10% | 0 | n/a | n/a |
 | 10% to 20% | 1 | 17% | 0% |
 | 20% to 30% | 1 | 24% | 0% |
-| 30% to 40% | 0 | n/a | n/a |
+| 30% to 40% | 1 | 31% | 0% |
 | 40% to 50% | 1 | 40% | 0% |
-| 50% to 60% | 0 | n/a | n/a |
+| 50% to 60% | 1 | 58% | 100% |
 | 60% to 70% | 0 | n/a | n/a |
 | 70% to 80% | 1 | 71% | 100% |
 | 80% to 90% | 0 | n/a | n/a |
@@ -44,8 +44,8 @@ By question type:
 
 | Type | Count | Mean Brier | Mean log score | Mean above uniform |
 | --- | --- | --- | --- | --- |
-| Yes/no | 4 | 0.083 | -0.329 | 0.365 |
-| Multiple choice | 0 | n/a | n/a | n/a |
+| Yes/no | 6 | 0.101 | -0.372 | 0.322 |
+| Multiple choice | 1 | n/a | -0.821 | 0.788 |
 | Numeric | 2 | n/a | -4.757 | 0.647 |
 | Discrete | 6 | n/a | -4.214 | -0.308 |
 | Date | 0 | n/a | n/a | n/a |
@@ -53,6 +53,18 @@ By question type:
 ## Mornings
 
 Newest first.
+
+### 20 November 2026
+
+3 newly resolved questions.
+
+| Question | Type | Outcome | Our forecast | Brier | Log score | Above uniform | Metaculus baseline | Metaculus peer |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Question 46661](https://www.metaculus.com/questions/46428/) | Yes/no | Yes | 58% Yes | 0.176 | -0.545 | 0.148 | 11.8 | -6.8 |
+| [Question 46707](https://www.metaculus.com/questions/46450/) | Multiple choice | option 2 of 5 | 44% on the outcome | n/a | -0.821 | 0.788 | 45.9 | 13.1 |
+| [Question 46726](https://www.metaculus.com/questions/46470/) | Yes/no | No | 31% Yes | 0.096 | -0.371 | 0.322 | 12.6 | 12.7 |
+
+No misses: every forecast did at least as well as a uniform one.
 
 ### 19 November 2026
 

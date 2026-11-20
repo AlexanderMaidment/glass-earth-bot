@@ -97,6 +97,15 @@
    "notes": [],
    "questions": [],
    "worst": []
+  },
+  "2026-11-20": {
+   "notes": [],
+   "questions": [
+    46661,
+    46707,
+    46726
+   ],
+   "worst": []
   }
  },
  "questions": {
@@ -361,6 +370,72 @@
    "question_id": 46660,
    "reported_on": "2026-11-15",
    "resolved_at_utc": "2026-11-14T04:59:00Z",
+   "score_note": null,
+   "type": "binary"
+  },
+  "46661": {
+   "above_uniform": 0.14842000511827314,
+   "brier": 0.17640000000000003,
+   "cause": null,
+   "closed_at_utc": "2026-11-07T18:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-07T16:21:02Z",
+   "forecast_source": "ledger",
+   "forecast_text": "58% Yes",
+   "log_score": -0.5447271754416722,
+   "metaculus_baseline_score": 11.772817722405536,
+   "metaculus_peer_score": -6.763350457702311,
+   "outcome": "yes",
+   "outcome_text": "Yes",
+   "post_id": 46428,
+   "probability_on_outcome": 0.58,
+   "probability_yes": 0.58,
+   "question_id": 46661,
+   "reported_on": "2026-11-20",
+   "resolved_at_utc": "2026-11-19T18:49:00Z",
+   "score_note": null,
+   "type": "binary"
+  },
+  "46707": {
+   "above_uniform": 0.7884573603642699,
+   "brier": null,
+   "cause": null,
+   "closed_at_utc": "2026-11-09T16:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-09T13:11:31Z",
+   "forecast_source": "ledger",
+   "forecast_text": "44% on the outcome",
+   "log_score": -0.8209805520698303,
+   "metaculus_baseline_score": 45.851485548455976,
+   "metaculus_peer_score": 13.112839883004979,
+   "outcome": null,
+   "outcome_text": "option 2 of 5",
+   "post_id": 46450,
+   "probability_on_outcome": 0.43999999999999995,
+   "probability_yes": null,
+   "question_id": 46707,
+   "reported_on": "2026-11-20",
+   "resolved_at_utc": "2026-11-19T21:43:00Z",
+   "score_note": null,
+   "type": "multiple_choice"
+  },
+  "46726": {
+   "above_uniform": 0.3220834991691132,
+   "brier": 0.0961,
+   "cause": null,
+   "closed_at_utc": "2026-11-13T12:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-13T11:11:12Z",
+   "forecast_source": "ledger",
+   "forecast_text": "31% Yes",
+   "log_score": -0.37106368139083207,
+   "metaculus_baseline_score": 12.597807451722911,
+   "metaculus_peer_score": 12.653123636670502,
+   "outcome": "no",
+   "outcome_text": "No",
+   "post_id": 46470,
+   "probability_on_outcome": 0.69,
+   "probability_yes": 0.31,
+   "question_id": 46726,
+   "reported_on": "2026-11-20",
+   "resolved_at_utc": "2026-11-19T06:33:00Z",
    "score_note": null,
    "type": "binary"
   }
