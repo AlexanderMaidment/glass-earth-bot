@@ -346,3 +346,4 @@
 {"ledger_version": 3, "sealed": true, "question_id": 46215, "url": "https://www.metaculus.com/questions/46010", "recorded_at_utc": "2026-11-22T21:57:04Z", "seal_sha256": "1dd55e2e92bf5307ef6a3193f15162393bab8a2406c65935a685cfc16fe36bf4"}
 {"ledger_version": 3, "sealed": true, "question_id": 46209, "url": "https://www.metaculus.com/questions/46008", "recorded_at_utc": "2026-11-22T21:58:16Z", "seal_sha256": "7e7a5d51cd487d1119032de85d78d620d5df4176b40e26abd7b48043d4824f75"}
 {"ledger_version": 3, "sealed": true, "question_id": 46203, "url": "https://www.metaculus.com/questions/46007", "recorded_at_utc": "2026-11-22T21:59:20Z", "seal_sha256": "0d64006a6c777f546aef8833ce13fd7a87082c13dcaebdb397a34fec0f9bef3b"}
+{"ledger_version": 3, "sealed": true, "question_id": 46888, "url": "https://www.metaculus.com/questions/46628", "recorded_at_utc": "2026-11-23T00:11:23Z", "seal_sha256": "4818d29ef309d156b42c54875479aa8563c166e3917a5f1877f5c478174479c7"}
