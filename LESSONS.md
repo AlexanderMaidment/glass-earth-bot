@@ -23,7 +23,7 @@ What glass-earth-bot learns from the questions it has forecast, once they resolv
 
 ## Calibration so far
 
-From the 15 resolved questions reported so far.
+From the 19 resolved questions reported so far.
 
 Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lower edge up to, not including, its upper edge; the last one includes 100%.
 
@@ -34,25 +34,40 @@ Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lowe
 | 20% to 30% | 1 | 24% | 0% |
 | 30% to 40% | 1 | 31% | 0% |
 | 40% to 50% | 1 | 40% | 0% |
-| 50% to 60% | 1 | 58% | 100% |
+| 50% to 60% | 2 | 58.5% | 100% |
 | 60% to 70% | 0 | n/a | n/a |
 | 70% to 80% | 1 | 71% | 100% |
 | 80% to 90% | 0 | n/a | n/a |
-| 90% to 100% | 0 | n/a | n/a |
+| 90% to 100% | 1 | 90% | 100% |
 
 By question type:
 
 | Type | Count | Mean Brier | Mean log score | Mean above uniform |
 | --- | --- | --- | --- | --- |
-| Yes/no | 6 | 0.101 | -0.372 | 0.322 |
+| Yes/no | 8 | 0.098 | -0.358 | 0.335 |
 | Multiple choice | 1 | n/a | -0.821 | 0.788 |
-| Numeric | 2 | n/a | -4.757 | 0.647 |
+| Numeric | 4 | n/a | -5.162 | 0.242 |
 | Discrete | 6 | n/a | -4.214 | -0.308 |
 | Date | 0 | n/a | n/a | n/a |
 
 ## Mornings
 
 Newest first.
+
+### 24 November 2026
+
+4 newly resolved questions.
+
+| Question | Type | Outcome | Our forecast | Brier | Log score | Above uniform | Metaculus baseline | Metaculus peer |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Question 46208](https://www.metaculus.com/questions/46008/) | Numeric | -7.421 | 0.139% in the outcome's bin | n/a | -6.578 | -1.175 | -44.2 | -8.5 |
+| [Question 46202](https://www.metaculus.com/questions/46007/) | Numeric | -1.23 | 1.1% in the outcome's bin | n/a | -4.556 | 0.848 | 33.2 | 6.0 |
+| [Question 46568](https://www.metaculus.com/questions/46335/) | Yes/no | Yes | 59% Yes | 0.168 | -0.528 | 0.166 | 22.2 | -2.8 |
+| [Question 46585](https://www.metaculus.com/questions/46352/) | Yes/no | Yes | 90% Yes | 0.010 | -0.105 | 0.588 | 79.4 | 26.7 |
+
+Worst misses:
+
+1. [Question 46208](https://www.metaculus.com/questions/46008/): 0.139% in the outcome's bin, outcome -7.421, log score -6.578. Cause: The forecast underestimated the chance and magnitude of a sharp relative decline in gold versus equities, leaving the realized loss beyond its lower-tail range.
 
 ### 23 November 2026
 

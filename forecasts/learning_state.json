@@ -121,6 +121,18 @@
    "notes": [],
    "questions": [],
    "worst": []
+  },
+  "2026-11-24": {
+   "notes": [],
+   "questions": [
+    46208,
+    46202,
+    46568,
+    46585
+   ],
+   "worst": [
+    46208
+   ]
   }
  },
  "questions": {
@@ -145,6 +157,50 @@
    "resolved_at_utc": "2026-11-17T22:16:00Z",
    "score_note": null,
    "type": "discrete"
+  },
+  "46202": {
+   "above_uniform": 0.8478532680245898,
+   "brier": null,
+   "cause": null,
+   "closed_at_utc": "2026-11-09T04:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-09T00:39:34Z",
+   "forecast_source": "ledger",
+   "forecast_text": "1.1% in the outcome's bin",
+   "log_score": -4.555824614181273,
+   "metaculus_baseline_score": 33.167091795847114,
+   "metaculus_peer_score": 5.959047718235327,
+   "outcome": "-1.23",
+   "outcome_text": "-1.23",
+   "post_id": 46007,
+   "probability_on_outcome": 0.010505833400000053,
+   "probability_yes": null,
+   "question_id": 46202,
+   "reported_on": "2026-11-24",
+   "resolved_at_utc": "2026-11-23T21:52:00Z",
+   "score_note": null,
+   "type": "numeric"
+  },
+  "46208": {
+   "above_uniform": -1.174516776153669,
+   "brier": null,
+   "cause": "The forecast underestimated the chance and magnitude of a sharp relative decline in gold versus equities, leaving the realized loss beyond its lower-tail range.",
+   "closed_at_utc": "2026-11-09T04:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-09T00:38:33Z",
+   "forecast_source": "ledger",
+   "forecast_text": "0.139% in the outcome's bin",
+   "log_score": -6.578194658359532,
+   "metaculus_baseline_score": -44.156594376401,
+   "metaculus_peer_score": -8.535568997404177,
+   "outcome": "-7.421",
+   "outcome_text": "-7.421",
+   "post_id": 46008,
+   "probability_on_outcome": 0.0013903571000000031,
+   "probability_yes": null,
+   "question_id": 46208,
+   "reported_on": "2026-11-24",
+   "resolved_at_utc": "2026-11-23T22:00:00Z",
+   "score_note": null,
+   "type": "numeric"
   },
   "46248": {
    "above_uniform": -0.015388914273818166,
@@ -233,6 +289,50 @@
    "resolved_at_utc": "2026-11-17T22:12:00Z",
    "score_note": null,
    "type": "numeric"
+  },
+  "46568": {
+   "above_uniform": 0.1655144384775733,
+   "brier": 0.16810000000000003,
+   "cause": null,
+   "closed_at_utc": "2026-11-08T18:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-08T15:12:35Z",
+   "forecast_source": "ledger",
+   "forecast_text": "59% Yes",
+   "log_score": -0.527632742082372,
+   "metaculus_baseline_score": 22.209041175623447,
+   "metaculus_peer_score": -2.768353580510923,
+   "outcome": "yes",
+   "outcome_text": "Yes",
+   "post_id": 46335,
+   "probability_on_outcome": 0.59,
+   "probability_yes": 0.59,
+   "question_id": 46568,
+   "reported_on": "2026-11-24",
+   "resolved_at_utc": "2026-11-23T14:08:00Z",
+   "score_note": null,
+   "type": "binary"
+  },
+  "46585": {
+   "above_uniform": 0.5877866649021191,
+   "brier": 0.009999999999999995,
+   "cause": null,
+   "closed_at_utc": "2026-11-11T03:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-11T00:11:23Z",
+   "forecast_source": "ledger",
+   "forecast_text": "90% Yes",
+   "log_score": -0.10536051565782628,
+   "metaculus_baseline_score": 79.43289524604506,
+   "metaculus_peer_score": 26.744356943931425,
+   "outcome": "yes",
+   "outcome_text": "Yes",
+   "post_id": 46352,
+   "probability_on_outcome": 0.9,
+   "probability_yes": 0.9,
+   "question_id": 46585,
+   "reported_on": "2026-11-24",
+   "resolved_at_utc": "2026-11-23T22:06:00Z",
+   "score_note": null,
+   "type": "binary"
   },
   "46654": {
    "above_uniform": 0.14921585759653366,
