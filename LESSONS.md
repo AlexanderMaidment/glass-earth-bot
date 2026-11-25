@@ -23,17 +23,17 @@ What glass-earth-bot learns from the questions it has forecast, once they resolv
 
 ## Calibration so far
 
-From the 19 resolved questions reported so far.
+From the 27 resolved questions reported so far.
 
 Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lower edge up to, not including, its upper edge; the last one includes 100%.
 
 | Forecast of Yes | Count | Mean forecast | Observed frequency of Yes |
 | --- | --- | --- | --- |
 | 0% to 10% | 0 | n/a | n/a |
-| 10% to 20% | 1 | 17% | 0% |
+| 10% to 20% | 2 | 17.5% | 50% |
 | 20% to 30% | 1 | 24% | 0% |
 | 30% to 40% | 1 | 31% | 0% |
-| 40% to 50% | 1 | 40% | 0% |
+| 40% to 50% | 2 | 42.5% | 50% |
 | 50% to 60% | 2 | 58.5% | 100% |
 | 60% to 70% | 0 | n/a | n/a |
 | 70% to 80% | 1 | 71% | 100% |
@@ -44,15 +44,36 @@ By question type:
 
 | Type | Count | Mean Brier | Mean log score | Mean above uniform |
 | --- | --- | --- | --- | --- |
-| Yes/no | 8 | 0.098 | -0.358 | 0.335 |
+| Yes/no | 10 | 0.176 | -0.538 | 0.156 |
 | Multiple choice | 1 | n/a | -0.821 | 0.788 |
-| Numeric | 4 | n/a | -5.162 | 0.242 |
-| Discrete | 6 | n/a | -4.214 | -0.308 |
+| Numeric | 8 | n/a | -4.784 | 0.018 |
+| Discrete | 8 | n/a | -4.344 | -0.036 |
 | Date | 0 | n/a | n/a | n/a |
 
 ## Mornings
 
 Newest first.
+
+### 25 November 2026
+
+8 newly resolved questions.
+
+| Question | Type | Outcome | Our forecast | Brier | Log score | Above uniform | Metaculus baseline | Metaculus peer |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Question 46525](https://www.metaculus.com/questions/46295/) | Yes/no | Yes | 18% Yes | 0.672 | -1.715 | -1.022 | -134.0 | -44.1 |
+| [Question 46244](https://www.metaculus.com/questions/46015/) | Numeric | 40.03 | 0.093% in the outcome's bin | n/a | -6.980 | -1.576 | -69.5 | -3.1 |
+| [Question 46238](https://www.metaculus.com/questions/46014/) | Discrete | 4.92 | 1.4% in the outcome's bin | n/a | -4.238 | 1.165 | 51.7 | -2.9 |
+| [Question 46232](https://www.metaculus.com/questions/46013/) | Numeric | below the lower bound | 5.7% beyond the bound | n/a | -2.867 | 0.129 | 5.1 | 41.8 |
+| [Question 46226](https://www.metaculus.com/questions/46012/) | Numeric | below the lower bound | 5.7% beyond the bound | n/a | -2.867 | 0.129 | 5.1 | 20.6 |
+| [Question 46220](https://www.metaculus.com/questions/46011/) | Numeric | -0.923 | 0.736% in the outcome's bin | n/a | -4.911 | 0.493 | 26.8 | 4.6 |
+| [Question 46709](https://www.metaculus.com/questions/46010/) | Discrete | 3.76 | 0.534% in the outcome's bin | n/a | -5.232 | 0.398 | 11.2 | -0.3 |
+| [Question 46586](https://www.metaculus.com/questions/46353/) | Yes/no | Yes | 45% Yes | 0.303 | -0.799 | -0.105 | -14.3 | 31.8 |
+
+Worst misses:
+
+1. [Question 46244](https://www.metaculus.com/questions/46015/): 0.093% in the outcome's bin, outcome 40.03, log score -6.980. Cause: The forecast underweighted the possibility of a sharp volatility spike, placing the observed peak near its extreme upper tail.
+2. [Question 46525](https://www.metaculus.com/questions/46295/): 18% Yes, outcome Yes, log score -1.715. Cause: It overestimated how slowly the active cases would proceed and underweighted the chance that a December hearing would produce another conviction.
+3. [Question 46586](https://www.metaculus.com/questions/46353/): 45% Yes, outcome Yes, log score -0.799. Cause: It overestimated Hungary’s review delay and political sensitivities, while underestimating how quickly negotiated signoff could unlock approval.
 
 ### 24 November 2026
 
