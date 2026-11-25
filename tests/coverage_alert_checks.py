@@ -1,10 +1,14 @@
 """
 The coverage alert (scripts/coverage_alert.py), offline: SYNTHETIC Metaculus
 listings from a fake API and a SYNTHETIC ledger. Nothing here touches the
-network, reads .env or spends money.
+network, reads .env or spends money. Run with
+    python -m unittest discover -s tests -p coverage_alert_checks.py
+The name is not test*.py on purpose: the forecasting workflows run only
+test*.py before they forecast, so a failure here never stops a forecast.
 """
 
 import contextlib
+import fnmatch
 import importlib.util
 import io
 import json
@@ -291,11 +295,21 @@ class CoverageAlertTest(OfflineTestCase):
         self.assertIn("workflow_dispatch:", text)
         self.assertIn("contents: read", text)
         self.assertNotIn("contents: write", text)
-        self.assertNotIn("glass-earth-model-spend", text)
+        self.assertEqual(re.findall(r"^\s*group:\s*(\S+)\s*$", text, re.M), ["glass-earth-coverage-alert"])
         secrets = set(re.findall(r"secrets\.([A-Z_]+)", text))
         self.assertEqual(secrets, {"METACULUS_TOKEN"})
         self.assertIn("scripts/coverage_alert.py", text)
+        self.assertIn(f"-p {Path(__file__).name}", text)
         self.assertNotIn(chr(0x2014), text)
+
+    def test_the_forecasting_runs_never_run_these_checks(self):
+        # Their test step is "unittest discover -s tests", which takes test*.py
+        # only, so nothing here can stop a forecasting run.
+        self.assertFalse(fnmatch.fnmatch(Path(__file__).name, "test*.py"))
+        for name in ("run_bot_on_tournament.yaml", "run_bot_on_metaculus_cup.yaml", "learning_loop.yaml"):
+            text = (REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            self.assertIn("unittest discover -s tests", text)
+            self.assertNotIn(Path(__file__).name, text)
 
 
 if __name__ == "__main__":

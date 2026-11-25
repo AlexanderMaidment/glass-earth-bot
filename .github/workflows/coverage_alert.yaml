@@ -1,0 +1,54 @@
+﻿name: Coverage alert
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 21 * * *" # every day at 21:30 UTC (07:30 in Brisbane); GitHub may start it hours late
+
+# Glass Earth: not in the glass-earth-model-spend group. This job never calls a
+# model or spends, and a run queued in that group cancels an older waiting run,
+# which could be a forecasting run.
+concurrency:
+  group: glass-earth-coverage-alert
+  cancel-in-progress: false
+
+# Once a day: every open question in the bot's tournaments that still has no
+# forecast from us 24 hours after it opened, and every question that closed in
+# the last 36 hours without one, named by ID and link (scripts/coverage_alert.py).
+# A gap, or a check that could not read Metaculus, ends the run with a failing
+# exit code, so GitHub emails the owner. It reads Metaculus only, never posts,
+# never spends and commits nothing.
+jobs:
+  coverage_job:
+    # Glass Earth: off until Alex switches it on with the repository variable
+    # GLASS_EARTH_COVERAGE_ALERT set to true (Settings > Secrets and variables >
+    # Actions > Variables). Set it to false, or delete it, to stop the alert.
+    if: vars.GLASS_EARTH_COVERAGE_ALERT == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Run the coverage alert's offline tests
+        # No network, no keys. A failing test fails the run, which GitHub also emails.
+        # The file is not named test*.py, so the forecasting workflows' own test step
+        # never runs it and a change here can never stop a forecasting run.
+        run: uv run --locked python -m unittest discover -s tests -p coverage_alert_checks.py
+      - name: Check coverage
+        run: |
+          uv run --locked python scripts/coverage_alert.py
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          # The same switch as the tournament workflow: Market Pulse is checked
+          # only while the bot forecasts it.
+          GLASS_EARTH_MARKET_PULSE: ${{ vars.GLASS_EARTH_MARKET_PULSE }}
