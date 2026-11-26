@@ -54,6 +54,10 @@ By question type:
 
 Newest first.
 
+### 26 November 2026
+
+Nothing new resolved.
+
 ### 25 November 2026
 
 8 newly resolved questions.
