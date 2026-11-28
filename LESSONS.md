@@ -23,7 +23,7 @@ What glass-earth-bot learns from the questions it has forecast, once they resolv
 
 ## Calibration so far
 
-From the 27 resolved questions reported so far.
+From the 30 resolved questions reported so far.
 
 Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lower edge up to, not including, its upper edge; the last one includes 100%.
 
@@ -31,20 +31,20 @@ Yes/no questions, by our forecast of Yes. Each bin holds forecasts from its lowe
 | --- | --- | --- | --- |
 | 0% to 10% | 0 | n/a | n/a |
 | 10% to 20% | 2 | 17.5% | 50% |
-| 20% to 30% | 1 | 24% | 0% |
+| 20% to 30% | 2 | 23% | 50% |
 | 30% to 40% | 1 | 31% | 0% |
 | 40% to 50% | 2 | 42.5% | 50% |
 | 50% to 60% | 2 | 58.5% | 100% |
 | 60% to 70% | 0 | n/a | n/a |
-| 70% to 80% | 1 | 71% | 100% |
-| 80% to 90% | 0 | n/a | n/a |
+| 70% to 80% | 2 | 71.5% | 100% |
+| 80% to 90% | 1 | 86% | 100% |
 | 90% to 100% | 1 | 90% | 100% |
 
 By question type:
 
 | Type | Count | Mean Brier | Mean log score | Mean above uniform |
 | --- | --- | --- | --- | --- |
-| Yes/no | 10 | 0.176 | -0.538 | 0.156 |
+| Yes/no | 13 | 0.189 | -0.567 | 0.126 |
 | Multiple choice | 1 | n/a | -0.821 | 0.788 |
 | Numeric | 8 | n/a | -4.784 | 0.018 |
 | Discrete | 8 | n/a | -4.344 | -0.036 |
@@ -53,6 +53,20 @@ By question type:
 ## Mornings
 
 Newest first.
+
+### 28 November 2026
+
+3 newly resolved questions.
+
+| Question | Type | Outcome | Our forecast | Brier | Log score | Above uniform | Metaculus baseline | Metaculus peer |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [Question 46584](https://www.metaculus.com/questions/46351/) | Yes/no | Yes | 86% Yes | 0.020 | -0.151 | 0.542 | 73.2 | -2.5 |
+| [Question 46825](https://www.metaculus.com/questions/46565/) | Yes/no | Yes | 72% Yes | 0.078 | -0.329 | 0.365 | 47.6 | 3.6 |
+| [Question 46833](https://www.metaculus.com/questions/46573/) | Yes/no | Yes | 22% Yes | 0.608 | -1.514 | -0.821 | -110.7 | -6.2 |
+
+Worst misses:
+
+1. [Question 46833](https://www.metaculus.com/questions/46573/): 22% Yes, outcome Yes, log score -1.514. Cause: The forecast likely underestimated the chance that electoral reform negotiations would bring a PASO suspension to the floor and secure Senate approval.
 
 ### 27 November 2026
 

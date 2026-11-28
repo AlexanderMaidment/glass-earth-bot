@@ -161,6 +161,17 @@
    "notes": [],
    "questions": [],
    "worst": []
+  },
+  "2026-11-28": {
+   "notes": [],
+   "questions": [
+    46584,
+    46825,
+    46833
+   ],
+   "worst": [
+    46833
+   ]
   }
  },
  "questions": {
@@ -472,6 +483,28 @@
    "score_note": null,
    "type": "binary"
   },
+  "46584": {
+   "above_uniform": 0.5423242908253616,
+   "brier": 0.019600000000000003,
+   "cause": null,
+   "closed_at_utc": "2026-11-10T09:00:00Z",
+   "forecast_recorded_at_utc": "2026-11-10T06:11:30Z",
+   "forecast_source": "ledger",
+   "forecast_text": "86% Yes",
+   "log_score": -0.15082288973458366,
+   "metaculus_baseline_score": 73.2419189654386,
+   "metaculus_peer_score": -2.4527776187409334,
+   "outcome": "yes",
+   "outcome_text": "Yes",
+   "post_id": 46351,
+   "probability_on_outcome": 0.86,
+   "probability_yes": 0.86,
+   "question_id": 46584,
+   "reported_on": "2026-11-28",
+   "resolved_at_utc": "2026-11-27T19:57:00Z",
+   "score_note": null,
+   "type": "binary"
+  },
   "46585": {
    "above_uniform": 0.5877866649021191,
    "brier": 0.009999999999999995,
@@ -755,6 +788,50 @@
    "question_id": 46726,
    "reported_on": "2026-11-20",
    "resolved_at_utc": "2026-11-19T06:33:00Z",
+   "score_note": null,
+   "type": "binary"
+  },
+  "46825": {
+   "above_uniform": 0.3646431135879092,
+   "brier": 0.07840000000000001,
+   "cause": null,
+   "closed_at_utc": "2026-11-16T05:16:39Z",
+   "forecast_recorded_at_utc": "2026-11-16T02:33:44Z",
+   "forecast_source": "ledger",
+   "forecast_text": "72% Yes",
+   "log_score": -0.3285040669720361,
+   "metaculus_baseline_score": 47.614290064573325,
+   "metaculus_peer_score": 3.6332705159587753,
+   "outcome": "yes",
+   "outcome_text": "Yes",
+   "post_id": 46565,
+   "probability_on_outcome": 0.72,
+   "probability_yes": 0.72,
+   "question_id": 46825,
+   "reported_on": "2026-11-28",
+   "resolved_at_utc": "2026-11-27T20:01:00Z",
+   "score_note": null,
+   "type": "binary"
+  },
+  "46833": {
+   "above_uniform": -0.8209805520698302,
+   "brier": 0.6084,
+   "cause": "The forecast likely underestimated the chance that electoral reform negotiations would bring a PASO suspension to the floor and secure Senate approval.",
+   "closed_at_utc": "2026-11-16T09:19:53Z",
+   "forecast_recorded_at_utc": "2026-11-16T06:31:35Z",
+   "forecast_source": "ledger",
+   "forecast_text": "22% Yes",
+   "log_score": -1.5141277326297755,
+   "metaculus_baseline_score": -110.73992959448327,
+   "metaculus_peer_score": -6.172621780633509,
+   "outcome": "yes",
+   "outcome_text": "Yes",
+   "post_id": 46573,
+   "probability_on_outcome": 0.22,
+   "probability_yes": 0.22,
+   "question_id": 46833,
+   "reported_on": "2026-11-28",
+   "resolved_at_utc": "2026-11-27T20:05:00Z",
    "score_note": null,
    "type": "binary"
   }
